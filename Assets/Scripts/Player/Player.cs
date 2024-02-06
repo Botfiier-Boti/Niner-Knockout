@@ -1,20 +1,12 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.SocialPlatforms;
 
 public class Player : MonoBehaviour
 {
-    public enum Direction
-    {
-        None,
-        Up,
-        Down,
-        Left,
-        Right
-    }
-
     private float _damagePercent = 0f;
 
     //The gravity we return to 
@@ -52,18 +44,6 @@ public class Player : MonoBehaviour
     //If hitStunFrames is not 0 we are hitstunned.
     bool isHitStunned => hitStunFrames > 0;
 
-    public enum PlayerState
-    {
-        None,       //Base state, no additional effects are applied.
-        attacking,  //Induced when attacking. Just allows us to make sure we don't start another attack when already attacking. Might need to delete this.
-        dashing, //Used when the player is dashing, do not set X velocity after dashing.
-        launched,   //Induced when launched. This just lets us know to stop the old launch coroutine and start a new one. Disables some physics.
-        helpless,   //Induced after running out of jumps while in the air. Sometimes called "Freefall" https://www.ssbwiki.com/Helpless
-        intangible, //Induced by dodging. Cannot be hit or pushed by other players. https://www.ssbwiki.com/Intangibility
-    }
-
-
-
     public PlayerState state = PlayerState.None;
 
     public GameObject playerSprite;
@@ -94,7 +74,7 @@ public class Player : MonoBehaviour
     //we walk if the x input is less than or equal to 0.5f
     private bool isWalking => Mathf.Abs(xAxis) <= 0.5f ? true : false;
     //set movespeed based on if we are walking.
-    private float moveSpeed => isWalking ? walkSpeed : runSpeed;
+    public float moveSpeed => isWalking ? walkSpeed : runSpeed;
 
     private bool shouldDash;
     #endregion
@@ -108,7 +88,6 @@ public class Player : MonoBehaviour
     private PlayerInput playerInput;
 
     //Input actions
-    private InputAction moveAction;
     private InputAction dirAction;
     private InputAction jumpAction;
     private InputAction attackAction;
@@ -123,6 +102,10 @@ public class Player : MonoBehaviour
     private InputAction downSmashAction;
     private InputAction rightSmashAction;
     private InputAction leftSmashAction;
+
+    private Dictionary<string, PlayerAction> inputMap = new Dictionary<string, PlayerAction>();
+
+    private PlayerAction currentAction;
 
     #region input bools
 
@@ -161,13 +144,13 @@ public class Player : MonoBehaviour
     private LayerMask rCasting;
 
     [Header("Jumping Parameters")]
-    [SerializeField] private int jumpCount = 1; //What we modify and check when jumping.
+    [SerializeField] public int jumpCount = 1; //What we modify and check when jumping.
     public int jumpTotal = 1; //Total jumps, so for instance if you wanted 3 jumps set this to 3.
     [SerializeField] private bool jumpCanceled;
     [SerializeField] private bool jumping;
     //private bool falling => inAir && transform.InverseTransformDirection(rb.velocity).y < 0;
     private bool falling;
-    public double jumpHeight = 5f; //Our jump height, set this to a specific value and our player will reach that height with a maximum deviation of 0.1
+    public float jumpHeight = 5f; //Our jump height, set this to a specific value and our player will reach that height with a maximum deviation of 0.1
     //time to reach the apex of the jump.
     //0.01f looks just like smash ultimate jumping.
     public float timeToApex = 0.01f;
@@ -187,7 +170,6 @@ public class Player : MonoBehaviour
     {
         //get the player input and assign the actions.
         playerInput = GetComponent<PlayerInput>();
-        moveAction = playerInput.actions["Move"];
         dirAction = playerInput.actions["Direction"];
         jumpAction = playerInput.actions["Jump"];
         attackAction = playerInput.actions["Attack"];
@@ -199,6 +181,9 @@ public class Player : MonoBehaviour
         downSmashAction = playerInput.actions["DownSmash"];
         rightSmashAction = playerInput.actions["RightSmash"];
         leftSmashAction = playerInput.actions["LeftSmash"];
+
+        inputMap.Add("Move", new MoveAction(playerInput.actions["Move"], this));
+
 
         /*        upSmashAction.performed += UpSmash;
                 downSmashAction.performed += DownSmash;
@@ -417,49 +402,19 @@ public class Player : MonoBehaviour
 
         #region moveInput
 
-        moveInput = moveAction.ReadValue<Vector2>();
-        moveDirection = ((moveInput.normalized.x * camTransform.right.normalized) + (moveInput.normalized.y * camTransform.up.normalized)) * moveSpeed;
-
-        //xAxis = moveInput.x != 0 ? moveInput.x > 0 ? 1 : -1 : 0;
-        //A or D is pressed return -1 or 1, relative to which
-        //if tilted less than or equal to .75f then walk.
-        //otherwise return zero.
-        if (moveInput.x != 0 && Mathf.Abs(moveInput.x) > 0.01 && (Mathf.Abs(moveInput.x) > Mathf.Abs(moveInput.y)))
-        {
-            if (moveInput.x > 0)
-            {
-                xAxis = moveInput.x <= 0.75f ? 0.5f : 1f;
-            }
-            else if (moveInput.x < 0)
-            {
-                xAxis = moveInput.x <= -0.75f ? -1 : -0.5f;
-            }
-        }
-        else
-        {
+        moveInput = inputMap["Move"].action.ReadValue<Vector2>();
+        if (moveInput != null) {
+            if (moveInput != Vector2.zero)
+                PerformAction("Move");
+            if (Mathf.Abs(moveInput.x) < 0.01)
+                xAxis = 0;
+            if (Mathf.Abs(moveInput.y) < 0.01)
+                yAxis = 0;
+        } else {
             xAxis = 0;
-        }
-
-
-        if (moveInput.y != 0 && Mathf.Abs(moveInput.y) > 0.01)
-        {
-            if (moveInput.y > 0)
-            {
-                yAxis = moveInput.y <= 0.75f ? 0.5f : 1f;
-            }
-            else if (moveInput.y < 0)
-            {
-                yAxis = moveInput.y <= -0.75f ? -1 : -0.5f;
-            }
-        }
-        else
-        {
             yAxis = 0;
         }
-
-
         #endregion
-
 
         if (isGrounded)
         {
@@ -551,8 +506,11 @@ public class Player : MonoBehaviour
         }
 
         #endregion
-
-
+        if (currentAction != null) {
+            currentAction.Run();
+            if (!currentAction.isLooping)
+                currentAction = null;
+        }
         ApplyFinalMovements();
     }
 
@@ -1721,6 +1679,15 @@ public class Player : MonoBehaviour
         Debug.Log("Player is Onscreen!");
     }
 
+    private void PerformAction(string action) {
+        if (currentAction != null && currentAction.isHogging())
+            return;
+        PlayerAction pa;
+        if (!inputMap.TryGetValue(action, out pa) || pa.isOnCooldown())
+            return;
+        currentAction = pa;
+    }
+
     //https://github.com/rubendal/SSBU-Calculator
     private float SakuraiAngle(float kb, bool aerial)
     {
@@ -1811,46 +1778,3 @@ public class Player : MonoBehaviour
     }
 }
 
-//used for storing the data of attacks in 
-//the player's attack data dictionary.
-[Serializable]
-public struct AttackInfo
-{
-    public AttackInfo(float launchAngle, float attackDamage, float baseKnockback, float knockbackScale, int hitLag)
-    {
-        this.launchAngle = launchAngle;
-        this.attackDamage = attackDamage;
-        this.baseKnockback = baseKnockback;
-        this.knockbackScale = knockbackScale;
-        this.hitLag = hitLag;
-    }
-
-    /// <summary>
-    /// The percentage of damage added to the player's damage meter upon a successful hit.
-    /// </summary>
-    public float attackDamage;
-
-    /// <summary>
-    /// The amount of additional hitlag 
-    /// Applied by this attack when 
-    /// launching.
-    /// </summary>
-    public int hitLag;
-
-    /// <summary>
-    /// The direction the enemy is sent in if this attack lands. In Degrees.
-    /// </summary>
-    public float launchAngle;
-
-    /// <summary>
-    /// The base knockback of this attack, regardless of the player's percentage.
-    /// </summary>
-    public float baseKnockback;
-
-    /// <summary>
-    /// Describes how much knockback and percent scale.
-    /// </summary>
-    public float knockbackScale;
-
-
-}
