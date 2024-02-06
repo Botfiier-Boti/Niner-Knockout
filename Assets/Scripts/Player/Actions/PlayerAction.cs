@@ -12,6 +12,8 @@ public class PlayerAction {
 
     public bool isLooping = false;
 
+    public bool running {get; private set;} = false;
+
     public long cooldown;
 
     public long lockoutTime = 0;
@@ -48,17 +50,17 @@ public class PlayerAction {
         if (isOnCooldown()) {
             return;
         }
+        running = true;
         Do();
         End();
     }
 
-    public virtual void Do() {
-        
-    }
+    public virtual void Do() {}
 
     private void End() {
         nextUse = System.DateTime.Now.Ticks + cooldown * TICKS_IN_MILLISECOND;
         whenFree = System.DateTime.Now.Ticks + lockoutTime * TICKS_IN_MILLISECOND;
+        running = false;
     }
 
     public bool isOnCooldown() {

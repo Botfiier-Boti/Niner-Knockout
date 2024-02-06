@@ -6,10 +6,11 @@ using UnityEngine.SocialPlatforms;
 public class MoveAction : PlayerAction {
 
     public MoveAction(InputAction action, Player owner) : base(action, owner) {
-        //isLooping = true;
+        isLooping = false;
     }
 
     public override void Do() {
+        Debug.Log("Moving");
         Transform camTransform = Camera.main.transform;
         Vector2 moveInput = action.ReadValue<Vector2>();
         Vector2 moveDirection = ((moveInput.normalized.x * camTransform.right.normalized) + (moveInput.normalized.y * camTransform.up.normalized)) * owner.moveSpeed;

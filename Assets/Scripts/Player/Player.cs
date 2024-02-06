@@ -14,7 +14,7 @@ public class Player : MonoBehaviour
     //after modifying gravity.
     float baseGravity = 9.81f;
     float gravity = 9.81f;
-    float fallGravity = 9.81f;
+    public float fallGravity = 9.81f;
 
     public float damagePercent { get { return _damagePercent; } set { float clamped = Mathf.Clamp(value, 0f, 999.0f); _damagePercent = clamped; } }
 
@@ -87,7 +87,7 @@ public class Player : MonoBehaviour
 
     private Transform camTransform;
 
-    private Rigidbody2D rb;
+    public Rigidbody2D rb;
 
     public Animator animator;
 
@@ -95,7 +95,6 @@ public class Player : MonoBehaviour
 
     //Input actions
     private InputAction dirAction;
-    private InputAction jumpAction;
     private InputAction attackAction;
     private InputAction specialAction;
     //Attack inputs
@@ -152,8 +151,8 @@ public class Player : MonoBehaviour
     [Header("Jumping Parameters")]
     [SerializeField] public int jumpCount = 1; //What we modify and check when jumping.
     public int jumpTotal = 1; //Total jumps, so for instance if you wanted 3 jumps set this to 3.
-    [SerializeField] private bool jumpCanceled;
-    [SerializeField] private bool jumping;
+    [SerializeField] public bool jumpCanceled;
+    [SerializeField] public bool jumping;
     //private bool falling => inAir && transform.InverseTransformDirection(rb.velocity).y < 0;
     private bool falling;
     public float jumpHeight = 5f; //Our jump height, set this to a specific value and our player will reach that height with a maximum deviation of 0.1
@@ -163,7 +162,7 @@ public class Player : MonoBehaviour
     public float timeToFall = 0.5f;
     public float heightScaleConstant = 120f;
     private float buttonTime;
-    private float jumpTime;
+    public float jumpTime;
     public double jumpDist; //used to see the measured distance of the jump.
     public Vector2 ogJump; //Not included just like what I said above.
     public float fallMultiplier = 9f; //When you reach the peak of the expected arc this is the force applied to make falling more fluid.
@@ -177,7 +176,6 @@ public class Player : MonoBehaviour
         //get the player input and assign the actions.
         playerInput = GetComponent<PlayerInput>();
         dirAction = playerInput.actions["Direction"];
-        jumpAction = playerInput.actions["Jump"];
         attackAction = playerInput.actions["Attack"];
         specialAction = playerInput.actions["Special"];
 
@@ -188,6 +186,7 @@ public class Player : MonoBehaviour
         rightSmashAction = playerInput.actions["RightSmash"];
         leftSmashAction = playerInput.actions["LeftSmash"];
 
+        inputMap.Add("Jump", new JumpAction(playerInput.actions["Jump"], this));
         inputMap.Add("Move", new MoveAction(playerInput.actions["Move"], this));
 
 
@@ -344,7 +343,7 @@ public class Player : MonoBehaviour
         #endregion
 
         #region jump bool control
-        doJump |= (jumpAction.WasPressedThisFrame() && jumpCount > 0 && !jumping); //We use |= because we want doJump to be set from true to false
+        doJump |= (inputMap["Jump"].action.WasPressedThisFrame() && jumpCount > 0 && !jumping); //We use |= because we want doJump to be set from true to false
         //This ^ Operator is the or equals operator, it's kind of hard to explain so hopefully I explain this correctly,
         //Basically its saying this : doJump = doJump || (jumpAction.GetButtonDown() && jumpCount > 0 && !jumping)
         //Which is too say, if doJump is already true we return true otherwise we check (jumpAction.GetButtonDown() && jumpCount > 0 && !jumping)
@@ -372,7 +371,7 @@ public class Player : MonoBehaviour
         if (jumping && !jumpCanceled)
         {
 
-            if (!jumpAction.IsPressed()) //If we stop giving input for jump cancel jump so we can have a variable jump.
+            if (!inputMap["Jump"].action.IsPressed()) //If we stop giving input for jump cancel jump so we can have a variable jump.
             {
                 jumpCanceled = true;
             }
@@ -508,15 +507,17 @@ public class Player : MonoBehaviour
                 //play the jump sequence
                 animator.SetTrigger("jump");
                 //wait 1 frame then call HandleJump().
-                StartCoroutine(LDUtil.WaitFrames(HandleJump, 1));
+                Debug.Log(currentAction);
+                PerformAction("Jump");
                 /*            if (doJump)
                 StartCoroutine(JumpCoroutine(10, jumpHeight));*/
             }
-            else
+            else if (doJump)
             {
                 //if we are air jumping then we don't need a windup frame.
-                HandleJump();
-
+                //PerformAction("Jump");
+                
+                PerformAction("Jump");
                 /*if (doJump)
                     StartCoroutine(JumpCoroutine(10, jumpHeight));*/
             }
@@ -566,7 +567,9 @@ public class Player : MonoBehaviour
 
         float dashForce = Mathf.Sqrt(2f * acceleration * modDashDist) * rb.mass;
 
-        rb.AddForce(playerSprite.transform.right * dashForce, ForceMode2D.Impulse);
+        Vector2 direction = (curDirection == Direction.Left ? Vector2.left : curDirection == Direction.Right ? Vector2.right : Vector2.zero );
+
+        rb.AddForce(direction * dashForce, ForceMode2D.Impulse);
 
         launchParticles.Play();
         while (frames > 0)
@@ -591,7 +594,7 @@ public class Player : MonoBehaviour
 
                 //decelerate to reach distance.
                 if (Mathf.Abs(rb.velocity.x) > 0)
-                rb.AddForce(-transform.right * acceleration * rb.mass);
+                    rb.AddForce(-direction * acceleration * rb.mass);
 
                 //decrement.
                 frames--;
@@ -601,7 +604,7 @@ public class Player : MonoBehaviour
         }
         Debug.Log("Done!");
         Debug.Log(dashDist / transform.position.x);
-        Debug.Break();
+        //Debug.Break();
 
         launchParticles.Stop();
         //go back to base state.
@@ -629,6 +632,8 @@ public class Player : MonoBehaviour
 
     private void HandlePassiveAnimation()
     {
+        if (moveInput == null)
+            return;
         Vector2 localVel = transform.InverseTransformDirection(rb.velocity);
 
         animator.SetBool("inAir", inAir);
@@ -653,7 +658,8 @@ public class Player : MonoBehaviour
 
     private void HandleRotation()
     {
-
+        if (moveInput == null)
+            return;
         //We do all rotations after
         //input so that the back 
         //aerial can be registered.
@@ -1721,7 +1727,7 @@ public class Player : MonoBehaviour
     }
 
     private void PerformAction(string action) {
-        if (currentAction != null && currentAction.isHogging())
+        if (currentAction != null && (currentAction.running || currentAction.isHogging()))
             return;
         PlayerAction pa;
         if (!inputMap.TryGetValue(action, out pa) || pa.isOnCooldown())
