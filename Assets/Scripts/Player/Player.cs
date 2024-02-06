@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
+using UnityEngine.InputSystem.Controls;
 using UnityEngine.SocialPlatforms;
 
 public class Player : MonoBehaviour
@@ -55,9 +56,14 @@ public class Player : MonoBehaviour
     [Range(1, 20)] public float runSpeed = 12f;
     [Range(1, 20)] public float maxSpeed = 14f;
 
-    [Header("Dashing")]
-    [Range(1, 30)] public float dashSpeed = 25f;
+    [Header("Dashing Parameters")]
+    [Range(1, 30)] public float dashDist = 5f;
     public int dashFrames = 10;
+    public float dashModifier = 1.422224f;
+    //This var stores the current dashCoroutine 
+    //and allows us to check if the dashCoroutine 
+    //is running. It is null otherwise.
+    private Coroutine dashCoroutine;
 
     public float xAxis;
     public float yAxis;
@@ -474,7 +480,18 @@ public class Player : MonoBehaviour
         #region dashing
         if (shouldDash && isGrounded)
         {
-            StartCoroutine(Dash());
+            if (dashCoroutine == null)
+            {
+                dashCoroutine = StartCoroutine(DashCoroutine());
+                Debug.Log(dashCoroutine != null);
+            }
+            else
+            {
+                Debug.Log("Stopping old dash Coroutine".Color("orange"));
+                StopCoroutine(dashCoroutine);
+                dashCoroutine = null;
+                dashCoroutine = StartCoroutine(DashCoroutine());
+            }
         }
         else
         {
@@ -532,19 +549,32 @@ public class Player : MonoBehaviour
 
     }
 
-    private IEnumerator Dash()
+    private IEnumerator DashCoroutine()
     {
         shouldDash = false;
-        float dashValue = dashSpeed;
+        
         int frames = dashFrames;
         state = PlayerState.dashing;
         Debug.Log("Dash!".Color("cyan"));
-        
+
+        //const float delta = 1f / 60f;
+        float timeToDash = frames / 60f;
+
+        float modDashDist = dashDist * dashModifier;
+
+        float acceleration = 2 * modDashDist / timeToDash;
+
+        float dashForce = Mathf.Sqrt(2f * acceleration * modDashDist) * rb.mass;
+
+        rb.AddForce(playerSprite.transform.right * dashForce, ForceMode2D.Impulse);
+
+        launchParticles.Play();
         while (frames > 0)
         {
             if (!isHitStunned)
             {
-                if (frames == dashFrames)
+
+/*                if (frames == dashFrames)
                 {
                     //play launch particles for a moment.
                     launchParticles.Play();
@@ -553,22 +583,33 @@ public class Player : MonoBehaviour
                 {
                     //stop playing launch particles.
                     launchParticles.Stop();
-                }
+                }*/
                 //make sure to rotate before we dash.
                 HandleRotation();
-                Debug.DrawRay(transform.position, playerSprite.transform.right * dashSpeed, Color.red);
-                rb.velocity = playerSprite.transform.right * dashSpeed;
+                Debug.DrawRay(transform.position, rb.velocity, Color.red);
+                //rb.velocity = playerSprite.transform.right * dashSpeed;
+
+                //decelerate to reach distance.
+                if (Mathf.Abs(rb.velocity.x) > 0)
+                rb.AddForce(-transform.right * acceleration * rb.mass);
 
                 //decrement.
-                dashValue -= 0.51f;
                 frames--;
                 yield return null;
                 
             }
         }
         Debug.Log("Done!");
+        Debug.Log(dashDist / transform.position.x);
+        Debug.Break();
+
+        launchParticles.Stop();
         //go back to base state.
+        yield return new WaitForEndOfFrame();
         state = PlayerState.None;
+        //set dashCoroutine back to null after finishing
+        //so we don't think we are still running.
+        dashCoroutine = null;
         
     }
 
