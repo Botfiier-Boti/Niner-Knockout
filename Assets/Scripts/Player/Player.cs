@@ -5,6 +5,7 @@ using UnityEngine;
 using UnityEngine.InputSystem;
 using UnityEngine.InputSystem.Controls;
 using UnityEngine.SocialPlatforms;
+using UnityEngine.UIElements;
 
 public class Player : MonoBehaviour
 {
@@ -56,14 +57,17 @@ public class Player : MonoBehaviour
     [Range(1, 20)] public float runSpeed = 12f;
     [Range(1, 20)] public float maxSpeed = 14f;
 
-    [Header("Dashing Parameters")]
+    [Header("Dash Parameters")]
     [Range(1, 30)] public float dashDist = 5f;
     public int dashFrames = 10;
-    public float dashModifier = 1.422224f;
+    public float dashModifier = 1f;
     //This var stores the current dashCoroutine 
     //and allows us to check if the dashCoroutine 
     //is running. It is null otherwise.
     private Coroutine dashCoroutine;
+
+    [Header("Dodge Parameters")]
+    public int dodgeFrames = 14;
 
     public float xAxis;
     public float yAxis;
@@ -112,6 +116,12 @@ public class Player : MonoBehaviour
 
     private PlayerAction currentAction;
 
+    //Shield input
+    private InputAction shieldAction;
+
+    //Grab input
+    private InputAction grabAction;
+
     #region input bools
 
     bool shouldAttack;
@@ -132,13 +142,15 @@ public class Player : MonoBehaviour
     float attackStopTime;
     bool shouldWaitToAttack;
     bool doDelayedAttack;
+
+    bool shouldDodge;
     #endregion
 
 
 
     #region Jumping
 
-    public bool isGrounded => Physics2D.BoxCast(transform.position, this.GetComponent<BoxCollider2D>().size, 0f, -transform.up, groundCheckDist, rCasting);
+    public bool isGrounded => Physics2D.BoxCast(transform.position, this.GetComponent<BoxCollider2D>().bounds.extents, 0f, -transform.up, this.GetComponent<BoxCollider2D>().bounds.extents.y + groundCheckDist, rCasting);
     public bool inAir => !jumping && !isGrounded;
     public bool doJump;
 
@@ -194,6 +206,9 @@ public class Player : MonoBehaviour
                 downSmashAction.performed += DownSmash;
                 rightSmashAction.performed += RightSmash;
                 leftSmashAction.performed += LeftSmash;*/
+
+        shieldAction = playerInput.actions["Shield"];
+        grabAction = playerInput.actions["Grab"];
     }
 
     private void OnEnable()
@@ -438,6 +453,13 @@ public class Player : MonoBehaviour
             {
                 HandleAerial();
                 HandleSpecial();
+                
+                if (grabAction.WasPressedThisFrame() && inAir || shieldAction.WasPressedThisFrame() && inAir)
+                {
+                    //set "shouldDodge" to true.
+                    //actually just call the dodge coroutine.
+                    StartCoroutine(DodgeCoroutine());
+                }
             }
         }
 
@@ -560,55 +582,90 @@ public class Player : MonoBehaviour
 
         //const float delta = 1f / 60f;
         float timeToDash = frames / 60f;
+        //float timeToDash = frames * Time.deltaTime;
 
         float modDashDist = dashDist * dashModifier;
 
-        float acceleration = 2 * modDashDist / timeToDash;
+        //This helped me solve it: https://www.quora.com/Given-time-and-distance-how-do-you-calculate-acceleration
+        //distance -> d
+        //average velocity = d/t
+        //final velocity = 2*d/t
+        //acceleration = final velocity / t
+        //therefore acceleration - 2*d/t^2
+        float acceleration = 2f * modDashDist / Mathf.Pow(timeToDash, 2f);
 
         float dashForce = Mathf.Sqrt(2f * acceleration * modDashDist) * rb.mass;
 
-        Vector2 direction = (curDirection == Direction.Left ? Vector2.left : curDirection == Direction.Right ? Vector2.right : Vector2.zero );
+        float initVel = Mathf.Sqrt(2f * acceleration * modDashDist);
 
-        rb.AddForce(direction * dashForce, ForceMode2D.Impulse);
+        //Time at max distance = v0 / acceleration
+        Debug.Log((initVel / acceleration).ToString().Color("lime"));
 
+        Debug.Log("Dash Force: " + dashForce);
+        //velocity = force / mass * time
+        //float dashVelocity = dashForce / rb.mass * timeToDash;
+
+        //make sure to rotate before we dash.
+        HandleRotation();
+
+        rb.AddForce(playerSprite.transform.right.normalized * dashForce, ForceMode2D.Impulse);
+        rb.AddForce(-playerSprite.transform.right.normalized * acceleration * rb.mass);
+        //frames--;
+        Debug.Log(("RBVel: " + rb.velocity).ToString().Color("purple"));
+        //calling add force here and then again in the while loop is fine
+        //accept when it's the first iteration of the loop and it hasn't
+        //returned to execution. 
+
+        //When 2 addforce calls are made during the same frame only one seems
+        //to be applied.
+        yield return new WaitForFixedUpdate();
+
+        float currentTime = timeToDash;
+
+        //Debug.Break();
         launchParticles.Play();
-        while (frames > 0)
+        while (/*currentTime > 0*/frames > 0)
         {
             if (!isHitStunned)
             {
-
-/*                if (frames == dashFrames)
-                {
-                    //play launch particles for a moment.
-                    launchParticles.Play();
-                }
-                else if (frames <= dashFrames / 2)
-                {
-                    //stop playing launch particles.
-                    launchParticles.Stop();
-                }*/
-                //make sure to rotate before we dash.
-                HandleRotation();
+                
                 Debug.DrawRay(transform.position, rb.velocity, Color.red);
-                //rb.velocity = playerSprite.transform.right * dashSpeed;
+                Debug.Log("InitVel: " + initVel + " Acceleration: " + acceleration);
+                Debug.Log("CurrentTime: " + currentTime + " FrameCount: " + frames);
+                //rb.velocity = playerSprite.transform.right.normalized * initVel;
+                //rb.velocity = playerSprite.transform.right * dashVelocity;
 
                 //decelerate to reach distance.
-                if (Mathf.Abs(rb.velocity.x) > 0)
-                    rb.AddForce(-direction * acceleration * rb.mass);
+                /* if (Mathf.Abs(rb.velocity.x) > 0)
+                     rb.AddForce(-transform.right * acceleration * rb.mass);*/
+
+                
+                rb.AddForce(-playerSprite.transform.right.normalized * acceleration * rb.mass);
+                Debug.Log(("RBVel: " + rb.velocity).ToString().Color("cyan"));
+
+
 
                 //decrement.
                 frames--;
-                yield return null;
+                currentTime -= Time.deltaTime;
+                if (currentTime < 0.0001)
+                {
+                    currentTime = 0;
+                }
+                yield return new WaitForFixedUpdate();
                 
             }
         }
+
+        rb.velocity = new Vector2(0f, rb.velocity.y);
         Debug.Log("Done!");
-        Debug.Log(dashDist / transform.position.x);
+        Debug.Log("Dist: " + dashDist + "\nDist Reached: " + transform.position.x + "\nScale to reach desired: " + dashDist / transform.position.x + "\nTimeToDash: " + timeToDash + "\ncurrentTime: " + currentTime);
+        
         //Debug.Break();
 
         launchParticles.Stop();
         //go back to base state.
-        yield return new WaitForEndOfFrame();
+        //yield return new WaitForEndOfFrame();
         state = PlayerState.None;
         //set dashCoroutine back to null after finishing
         //so we don't think we are still running.
@@ -616,6 +673,33 @@ public class Player : MonoBehaviour
         
     }
 
+    private IEnumerator DodgeCoroutine()
+    {
+        //this is only executed when the 
+        //coroutine starts, for the rest
+        //of coroutine execution it will
+        //be inside the while loop then 
+        //exit it.
+        if (state == PlayerState.None)
+        {
+            int frames = dodgeFrames;
+            state = PlayerState.intangible;
+            while (frames > 0)
+            {
+                //we wait for fixed update because we need to be in there to mess with physics.
+                yield return new WaitForFixedUpdate();
+
+                //do the physics for dodging.
+                //TODO:
+                //code spot dodging https://www.ssbwiki.com/Spot_dodge.
+                frames--;
+            }
+            //go into freefall after dodging.
+            //also set jump count to zero.
+            jumpCount = 0;
+            state = PlayerState.helpless;
+        }
+    }
 
     private void HandleUI()
     {
@@ -1034,7 +1118,7 @@ public class Player : MonoBehaviour
         //by mass at the end. It's basically the same.
         //In unity it factors in mass for this calculation so 
         //multiplying by mass cancels out mass entirely.
-        rb.AddForce(-transform.up * gravity * rb.mass);
+            rb.AddForce(-transform.up * gravity * rb.mass);
     }
 
     #region Attack Methods
@@ -1672,32 +1756,37 @@ public class Player : MonoBehaviour
         //if we are hit by a hurtbox that isn't a child of us then calculate damage and launch.
         if (collision.CompareTag("Hurtbox") && !collision.transform.IsChildOf(this.transform))
         {
-            Debug.Log("We were Hit!".Color("red"));
-            //get hurtbox
-            Hurtbox h = collision.gameObject.GetComponent<Hurtbox>();
-            //add damage delt to the total percent
-            //https://rubendal.github.io/SSBU-Calculator/
-            //Set the damage of a custom attack to 1 and you'll get the constant
-            //1.26 and it doesn't scale with percent, the attach damage is always
-            //multiplied by this value.
-            damagePercent += (h.attackInfo.attackDamage * 1.26f);
+            //when intangible we ignore attacks.
+            if (state != PlayerState.intangible)
+            {
 
-            //get the vector that the player should be sent in relative 
-            //to the hurtbox 
-            Vector3 dir = h.transform.position - this.transform.position;
-            dir.z = 0;
-            Debug.DrawRay(transform.position, dir.normalized, Color.yellow, 1f);
-            Debug.DrawRay(transform.position, -dir.normalized, Color.cyan, 1f);
-            Debug.DrawRay(transform.position, new Vector3(-dir.normalized.x, 0f, 0f), Color.magenta, 1f);
-            Vector3 wishDir = RadiansToVector(Mathf.Deg2Rad * (h.attackInfo.launchAngle));
-            //wishDir.x = -dir.x;
-            Debug.DrawRay(transform.position, wishDir.normalized * 5f, Color.green, 1f);
+                Debug.Log("We were Hit!".Color("red"));
+                //get hurtbox
+                Hurtbox h = collision.gameObject.GetComponent<Hurtbox>();
+                //add damage delt to the total percent
+                //https://rubendal.github.io/SSBU-Calculator/
+                //Set the damage of a custom attack to 1 and you'll get the constant
+                //1.26 and it doesn't scale with percent, the attach damage is always
+                //multiplied by this value.
+                damagePercent += (h.attackInfo.attackDamage * 1.26f);
 
-            //launch the player based off of the attack damage.
-            //old
-            //Launch(h.attackInfo.launchAngle, RadiansToVector(Mathf.Deg2Rad * (h.attackInfo.launchAngle)), h.attackInfo.attackDamage, h.attackInfo.baseKnockback, h.attackInfo.knockbackScale, h.attackInfo.hitLag);
-            //new
-            Launch(h.attackInfo.launchAngle, -dir.normalized, h.attackInfo.attackDamage, h.attackInfo.baseKnockback, h.attackInfo.knockbackScale, h.attackInfo.hitLag);
+                //get the vector that the player should be sent in relative 
+                //to the hurtbox 
+                Vector3 dir = h.transform.position - this.transform.position;
+                dir.z = 0;
+                Debug.DrawRay(transform.position, dir.normalized, Color.yellow, 1f);
+                Debug.DrawRay(transform.position, -dir.normalized, Color.cyan, 1f);
+                Debug.DrawRay(transform.position, new Vector3(-dir.normalized.x, 0f, 0f), Color.magenta, 1f);
+                Vector3 wishDir = RadiansToVector(Mathf.Deg2Rad * (h.attackInfo.launchAngle));
+                //wishDir.x = -dir.x;
+                Debug.DrawRay(transform.position, wishDir.normalized * 5f, Color.green, 1f);
+
+                //launch the player based off of the attack damage.
+                //old
+                //Launch(h.attackInfo.launchAngle, RadiansToVector(Mathf.Deg2Rad * (h.attackInfo.launchAngle)), h.attackInfo.attackDamage, h.attackInfo.baseKnockback, h.attackInfo.knockbackScale, h.attackInfo.hitLag);
+                //new
+                Launch(h.attackInfo.launchAngle, -dir.normalized, h.attackInfo.attackDamage, h.attackInfo.baseKnockback, h.attackInfo.knockbackScale, h.attackInfo.hitLag);
+            }
         }
         //the player entered the kill trigger. (kill bounds).
         else if (collision.gameObject.CompareTag("Kill"))
