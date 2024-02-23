@@ -1,5 +1,7 @@
 using System;
 using System.Collections;
+using System.ComponentModel.Design;
+using Unity.VisualScripting;
 using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.InputSystem;
@@ -19,24 +21,30 @@ public class Player : MonoBehaviour
 
     public float damagePercent { get { return _damagePercent; } set { float clamped = Mathf.Clamp(value, 0f, 999.0f); _damagePercent = clamped; } }
 
+    [HideInInspector]
     public CharacterIcon characterIcon;
 
     private Icon icon;
 
+    [Header("Misc References")]
     public Hurtbox hurtbox;
 
     public ParticleSystem launchParticles;
+    
+    public GameObject spriteParent;
 
+    public Animator animator;
+    
     private bool isFacingLeft;
 
     //the index of this character in the GameManager.
+    [HideInInspector]
     public int characterIndex;
 
     /// <summary>
     /// Used to set the angle, damage, and knockback of attacks.
     /// </summary>
     public Moveset moveset;
-
 
     //Hitstun should probably be a part of the playerstate
     //or some sort of substate so that these are 2 layers 
@@ -46,13 +54,27 @@ public class Player : MonoBehaviour
     //If hitStunFrames is not 0 we are hitstunned.
     bool isHitStunned => hitStunFrames > 0;
 
+    public enum PlayerState
+    {
+        None,       //Base state, no additional effects are applied.
+        attacking,  //Induced when attacking. Just allows us to make sure we don't start another attack when already attacking. Might need to delete this.
+        dashing,    //Used when the player is dashing, do not set X velocity after dashing.
+        launched,   //Induced when launched. This just lets us know to stop the old launch coroutine and start a new one. Disables some physics.
+        helpless,   //Induced after running out of jumps while in the air. Sometimes called "Freefall" https://www.ssbwiki.com/Helpless
+        intangible, //Induced by dodging. Cannot be hit or pushed by other players. https://www.ssbwiki.com/Intangibility
+        shielding,  //Induced by shielding, Cannot be damaged but doing any other action will exit this state.
+        grabbing,   //Induced by grabbing another character.
+        grabbed,    //Induced when being grabbed.
+    }
+
+
+    [Header("Player State")]
     public PlayerState state = PlayerState.None;
 
-    public GameObject playerSprite;
 
-    public float groundCheckDist = 0.1f;
 
     [Header("Movement Parameters")] //Explain that this will show a header in the inspector to categorize variables
+    [Range(1, 5)] public float helplessSpeed = 1.5f;
     [Range(1, 10)] public float walkSpeed = 5f;
     [Range(1, 20)] public float runSpeed = 12f;
     [Range(1, 20)] public float maxSpeed = 14f;
@@ -65,16 +87,34 @@ public class Player : MonoBehaviour
     //and allows us to check if the dashCoroutine 
     //is running. It is null otherwise.
     private Coroutine dashCoroutine;
+    //This tells us the direction the player input in order
+    //to begin dashing
+    private Direction dashDirection = Direction.None;
 
+    private Coroutine jumpCoroutine;
+
+    private bool dodging;
     [Header("Dodge Parameters")]
     public int dodgeFrames = 14;
+    public int intangibilityFrames = 21;
+    [Range(1, 30)] public float dodgeDist = 5f;
+    public float dodgeModifier = 1f;
 
+    [Header("Shield Parameters")]
+    public float totalShield = 50f;
+    private float shieldHealth = 0f;
+    public Transform shieldTransform;
+    private Vector3 ogShieldScale = Vector3.one;
+
+    [HideInInspector]
     public float xAxis;
+    [HideInInspector]
     public float yAxis;
 
     private Vector2 lastDirectionInput;
     private float lastXinput;
     private Vector2 moveInput;
+    private Vector2 camRelInput; 
     private Vector2 moveDirection;
 
     private Direction curDirection;
@@ -83,8 +123,8 @@ public class Player : MonoBehaviour
     #region movement bools
     //we walk if the x input is less than or equal to 0.5f
     private bool isWalking => Mathf.Abs(xAxis) <= 0.5f ? true : false;
-    //set movespeed based on if we are walking.
-    public float moveSpeed => isWalking ? walkSpeed : runSpeed;
+    //set movespeed based on if we are walking or helpless.
+    private float moveSpeed => state == PlayerState.helpless ? helplessSpeed : isWalking ? walkSpeed : runSpeed;
 
     private bool shouldDash;
     #endregion
@@ -93,7 +133,6 @@ public class Player : MonoBehaviour
 
     public Rigidbody2D rb;
 
-    public Animator animator;
 
     private PlayerInput playerInput;
 
@@ -150,8 +189,12 @@ public class Player : MonoBehaviour
 
     #region Jumping
 
-    public bool isGrounded => Physics2D.BoxCast(transform.position, this.GetComponent<BoxCollider2D>().bounds.extents, 0f, -transform.up, this.GetComponent<BoxCollider2D>().bounds.extents.y + groundCheckDist, rCasting);
+    //Changing isGrounded is what caused a logic error
+    //with the launching code. 
+    //public bool isGrounded => Physics2D.BoxCast(transform.position, this.GetComponent<BoxCollider2D>().bounds.extents, 0f, -transform.up, this.GetComponent<BoxCollider2D>().bounds.extents.y + groundCheckDist, rCasting);
+    public bool isGrounded => Physics2D.BoxCast(transform.position, this.GetComponent<BoxCollider2D>().size, 0f, -transform.up, groundCheckDist, rCasting);
     public bool inAir => !jumping && !isGrounded;
+    [HideInInspector]
     public bool doJump;
 
 
@@ -161,10 +204,11 @@ public class Player : MonoBehaviour
     private LayerMask rCasting;
 
     [Header("Jumping Parameters")]
-    [SerializeField] public int jumpCount = 1; //What we modify and check when jumping.
+    public float groundCheckDist = 0.1f;
+    private int jumpCount = 1; //What we modify and check when jumping.
     public int jumpTotal = 1; //Total jumps, so for instance if you wanted 3 jumps set this to 3.
-    [SerializeField] public bool jumpCanceled;
-    [SerializeField] public bool jumping;
+    private bool jumpCanceled;
+    private bool jumping;
     //private bool falling => inAir && transform.InverseTransformDirection(rb.velocity).y < 0;
     private bool falling;
     public float jumpHeight = 5f; //Our jump height, set this to a specific value and our player will reach that height with a maximum deviation of 0.1
@@ -172,13 +216,21 @@ public class Player : MonoBehaviour
     //0.01f looks just like smash ultimate jumping.
     public float timeToApex = 0.01f;
     public float timeToFall = 0.5f;
-    public float heightScaleConstant = 120f;
+    [Tooltip("Desired Height / jump height reached. Do not modify if you have not modified the time values.")]
+    public float jumpHeightModifier = 1.2f;
     private float buttonTime;
-    public float jumpTime;
+    private float jumpTime;
+
+    //LD should encapsulate this
+    //and the other code that calculates
+    //the jump distance
+    //in a #IF UNITY_EDITOR statement bc it would otherwise be included in builds and is
+    //calculated every jump.
     public double jumpDist; //used to see the measured distance of the jump.
     public Vector2 ogJump; //Not included just like what I said above.
     public float fallMultiplier = 9f; //When you reach the peak of the expected arc this is the force applied to make falling more fluid.
     public float lowJumpMultiplier = 15f; //When you stop holding jump to do a low jump this is the force applied to make the jump stop short.
+    private Coroutine rotateCoroutine;
 
     #endregion
 
@@ -231,6 +283,10 @@ public class Player : MonoBehaviour
     // Start is called before the first frame update
     void Start()
     {
+        //set the shield health.
+        shieldHealth = totalShield;
+        //set the OG scale of this shield for use later.
+        ogShieldScale = shieldTransform.localScale;
 
         rCasting = LayerMask.GetMask("Player", "Ignore Raycast"); //Assign our layer mask to player
         rCasting = ~rCasting; //Invert the layermask value so instead of being just the player it becomes every layer but the mask
@@ -258,6 +314,8 @@ public class Player : MonoBehaviour
 
         //only true during the frame the button is pressed.
         shouldAttack = attackAction.WasPressedThisFrame();
+        
+
         //While button is held down this is true.
         shouldAttackContinuous = attackAction.IsPressed();
 
@@ -306,7 +364,7 @@ public class Player : MonoBehaviour
         //Check if we should dash. 
         if (didTap && (curDirection == Direction.Right || curDirection == Direction.Left) && state != PlayerState.dashing)
         {
-            
+
             //set should dash to true so we dash on the next fixedUpdate.
             //Even if we dash, we are still going to be able to input 
             //a smash attack.
@@ -317,7 +375,8 @@ public class Player : MonoBehaviour
             //we should enter "Dashing" and only then should we do a "Dash Attack"
 
 
-
+            //set dashDirection so the coroutine knows which way we dashed.
+            dashDirection = curDirection;
             shouldDash = true;
         }
 
@@ -434,9 +493,24 @@ public class Player : MonoBehaviour
             xAxis = 0;
             yAxis = 0;
         }
+
+
         #endregion
 
-        if (isGrounded)
+
+        #region Shield Input
+        //if the user inputs shield
+        //during this frame reset their shield's
+        //health
+        if (shieldAction.WasPressedThisFrame())
+        {
+            Debug.Log("Should Shield".Color("red"));
+            
+
+            //TODO:
+            //start the shield shrinking timer here.
+        }
+        else if (shieldAction.IsPressed())
         {
             //only rotate when grounded,
             //or doing back aerial.
@@ -446,18 +520,23 @@ public class Player : MonoBehaviour
                 HandleAttack();
                 HandleSpecial();
             }
+            else if (!isHitStunned && state == PlayerState.dashing)
+            {
+                HandleDashAttack();
+            }
         }
-        else if (inAir)
+        else if (inAir && state != PlayerState.shielding)
         {
             if (!isHitStunned && state != PlayerState.helpless)
             {
                 HandleAerial();
                 HandleSpecial();
                 
-                if (grabAction.WasPressedThisFrame() && inAir || shieldAction.WasPressedThisFrame() && inAir)
+                if (grabAction.WasPressedThisFrame() || shieldAction.WasPressedThisFrame())
                 {
                     //set "shouldDodge" to true.
                     //actually just call the dodge coroutine.
+                    
                     StartCoroutine(DodgeCoroutine());
                 }
             }
@@ -492,6 +571,42 @@ public class Player : MonoBehaviour
         HandleState();
     }
 
+    private void HandleGrab()
+    {
+        RaycastHit2D hit = Physics2D.BoxCast(transform.position + new Vector3(0f, this.GetComponent<BoxCollider2D>().bounds.extents.x), this.GetComponent<BoxCollider2D>().size, 0f, -spriteParent.transform.right, groundCheckDist);
+        if (hit)
+        {
+            if (hit.collider.gameObject.CompareTag("Player"))
+            {
+                GameObject enemy = hit.collider.gameObject;
+                if (enemy != null)
+                {
+                    if (enemy.GetComponent<Joint2D>() == null)
+                    {
+                        //TODO:
+                        //tell the other player to set their state to "Grabbed"
+                        //Set our state to "grabbing"
+                        //so that we can't move but they can try to break the joint
+                        //by moving left and right.
+                        //also set the strength of the joint to a lower value.
+                        FixedJoint2D joint = enemy.AddComponent<FixedJoint2D>();
+                        joint.connectedBody = rb;
+                        joint.enableCollision = false;
+                    }
+                }
+            }
+        }
+    }
+
+    private void HandleDashAttack()
+    {
+        //if we should do a dash attack, call it.
+        if (shouldAttack && state == PlayerState.dashing)
+        {
+            DashAttack();
+        }
+    }
+
     private void FixedUpdate()
     {
         //currently
@@ -499,16 +614,15 @@ public class Player : MonoBehaviour
         //I think this is how smash works.
 
         #region dashing
-        if (shouldDash && isGrounded)
+        if (shouldDash && isGrounded && state != PlayerState.shielding)
         {
             if (dashCoroutine == null)
             {
                 dashCoroutine = StartCoroutine(DashCoroutine());
-                Debug.Log(dashCoroutine != null);
             }
             else
             {
-                Debug.Log("Stopping old dash Coroutine".Color("orange"));
+                //Debug.Log("Stopping old dash Coroutine".Color("orange"));
                 StopCoroutine(dashCoroutine);
                 dashCoroutine = null;
                 dashCoroutine = StartCoroutine(DashCoroutine());
@@ -569,11 +683,66 @@ public class Player : MonoBehaviour
         }
         #endregion
 
-
+        #region Shielding
+        if (state == PlayerState.shielding)
+        {
+            //In Ultimate you lose 0.15 per frame.
+            //Source: https://www.ssbwiki.com/Shield#Shield_statistics
+            if (shieldHealth > 0)
+            {
+                shieldHealth -= 0.15f;
+                shieldHealth = Mathf.Clamp(shieldHealth, 0f, totalShield);
+                //Formula comes from here: https://www.ssbwiki.com/Shield#Shield_statistics
+                //Assuming the total shield health is 50. 
+                shieldTransform.localScale = ogShieldScale * ((shieldHealth / totalShield) * 0.85f + 0.15f);
+                
+                //Shield break.
+                if (shieldHealth == 0f)
+                {
+                    ShieldBreak();
+                }
+            }
+            
+        }
+        
+        if (state != PlayerState.shielding)
+        {
+            //In Ultimate you regen 0.08 per frame.
+            //Source: https://www.ssbwiki.com/Shield#Shield_statistics
+            if (shieldHealth < totalShield)
+            {
+                //Debug.Log("ADDING SHIELD");
+                shieldHealth += 0.08f;
+                shieldHealth = Mathf.Clamp(shieldHealth, 0f, totalShield);
+                shieldTransform.localScale = ogShieldScale * ((shieldHealth / totalShield) * 0.85f + 0.15f);
+            }
+        }
+        #endregion
     }
 
-    private IEnumerator DashCoroutine()
+    private void ShieldBreak()
     {
+        state = PlayerState.launched;
+        jumpCoroutine = StartCoroutine(JumpCoroutine(40, 5));
+        //after your shield breaks it goes back to 37.5f health.
+        shieldHealth = 37.5f;
+    }
+
+    /*private IEnumerator DashCoroutine()
+    {
+        //this is what causes the smash attack charge to occur so
+        //we need to turn it off when we start dashing.
+        shouldAttackContinuous = false;
+        //We also don't want them to wait to do an attack
+        shouldWaitToAttack = false;
+
+        //Same reasons as before, we shouldn't be doing any attacks 
+        //that were input during dodging unless we are doing a dash attack.
+        shouldSmash = false;
+        //because dashing should cancel that check for a smash attack
+        //if we are already dashing.
+        shouldSmashContinuous = false;
+
         shouldDash = false;
         
         int frames = dashFrames;
@@ -624,7 +793,7 @@ public class Player : MonoBehaviour
 
         //Debug.Break();
         launchParticles.Play();
-        while (/*currentTime > 0*/frames > 0)
+        while (*//*currentTime > 0*//*frames > 0)
         {
             if (!isHitStunned)
             {
@@ -636,10 +805,12 @@ public class Player : MonoBehaviour
                 //rb.velocity = playerSprite.transform.right * dashVelocity;
 
                 //decelerate to reach distance.
-                /* if (Mathf.Abs(rb.velocity.x) > 0)
-                     rb.AddForce(-transform.right * acceleration * rb.mass);*/
+                *//* if (Mathf.Abs(rb.velocity.x) > 0)
+                     rb.AddForce(-transform.right * acceleration * rb.mass);*//*
 
                 
+                //Decelerate so we reach desired distance.
+                //This makes the player stop for a moment before continuing running though.
                 rb.AddForce(-playerSprite.transform.right.normalized * acceleration * rb.mass);
                 Debug.Log(("RBVel: " + rb.velocity).ToString().Color("cyan"));
 
@@ -657,7 +828,11 @@ public class Player : MonoBehaviour
             }
         }
 
-        rb.velocity = new Vector2(0f, rb.velocity.y);
+        //say we are no longer tapping
+        didTap = false;
+        
+
+        //rb.velocity = new Vector2(0f, rb.velocity.y);
         Debug.Log("Done!");
         Debug.Log("Dist: " + dashDist + "\nDist Reached: " + transform.position.x + "\nScale to reach desired: " + dashDist / transform.position.x + "\nTimeToDash: " + timeToDash + "\ncurrentTime: " + currentTime);
         
@@ -671,6 +846,193 @@ public class Player : MonoBehaviour
         //so we don't think we are still running.
         dashCoroutine = null;
         
+    }*/
+
+    private IEnumerator DashCoroutine()
+    {
+        //this is what causes the smash attack charge to occur so
+        //we need to turn it off when we start dashing.
+        shouldAttackContinuous = false;
+        //We also don't want them to wait to do an attack
+        shouldWaitToAttack = false;
+
+        //Same reasons as before, we shouldn't be doing any attacks 
+        //that were input during dodging unless we are doing a dash attack.
+        shouldSmash = false;
+        //because dashing should cancel that check for a smash attack
+        //if we are already dashing.
+        shouldSmashContinuous = false;
+
+        shouldDash = false;
+
+        int frames = dashFrames;
+        state = PlayerState.dashing;
+        Debug.Log(("Dash! " + (isFacingLeft ? "Left" : "Right")).Color("cyan"));
+
+        //const float delta = 1f / 60f;
+        float timeToDash = frames / 60f;
+        //float timeToDash = frames * Time.deltaTime;
+
+        //dash modifier = dash dist / actual distance reached prior to dash modifier application.
+        float modDashDist = dashDist * dashModifier;
+
+        //This helped me solve it: https://www.quora.com/Given-time-and-distance-how-do-you-calculate-acceleration
+        //distance -> d
+        //average velocity = d/t
+        //final velocity = 2*d/t
+        //acceleration = final velocity / t
+        //therefore acceleration - 2*d/t^2
+        float acceleration = 2f * modDashDist / Mathf.Pow(timeToDash, 2f);
+
+        float dashForce = Mathf.Sqrt(2f * acceleration * modDashDist) * rb.mass;
+
+        float initVel = Mathf.Sqrt(2f * acceleration * modDashDist);
+
+        float curVel = initVel;
+
+        //Time at max distance = v0 / acceleration
+        Debug.Log((initVel / acceleration).ToString().Color("lime"));
+
+        Debug.Log("Dash Force: " + dashForce);
+        //velocity = force / mass * time
+        //float dashVelocity = dashForce / rb.mass * timeToDash;
+
+        //make sure to rotate before we dash.
+        //HandleRotation();
+        HandleInstantaneousRotation();
+
+        //rb.AddForce(playerSprite.transform.right.normalized * dashForce, ForceMode2D.Impulse);
+        //rb.AddForce(-playerSprite.transform.right.normalized * acceleration * rb.mass);
+        //frames--;
+        Debug.Log(("RBVel: " + rb.velocity).ToString().Color("purple"));
+        //calling add force here and then again in the while loop is fine
+        //accept when it's the first iteration of the loop and it hasn't
+        //returned to execution. 
+
+        //When 2 addforce calls are made during the same frame only one seems
+        //to be applied.
+        //calling this/not calling this here had no affect on the distance
+        //reached, only the number of frames it took to reach the distance.
+        //yield return new WaitForFixedUpdate();
+
+        float currentTime = timeToDash;
+
+        //Debug.Break();
+        launchParticles.Play();
+        while (/*currentTime > 0*/frames > 0)
+        {
+            if (!isHitStunned)
+            {
+                //if we are rotating,
+                //wait until after to 
+                //start dashing.
+                /*                while (rotateCoroutine != null)
+                                {
+                                    yield return new WaitForFixedUpdate();
+                                }*/
+
+                //Debug.DrawRay(transform.position, rb.velocity, Color.red);
+                //Debug.Log("InitVel: " + initVel + " Acceleration: " + acceleration);
+                //Debug.Log("CurrentTime: " + currentTime + " FrameCount: " + frames);
+                //rb.velocity = playerSprite.transform.right.normalized * initVel;
+                //rb.velocity = playerSprite.transform.right * dashVelocity;
+
+                //decelerate to reach distance.
+                /* if (Mathf.Abs(rb.velocity.x) > 0)
+                     rb.AddForce(-transform.right * acceleration * rb.mass);*/
+
+
+                //Decelerate so we reach desired distance.
+                //This makes the player stop for a moment before continuing running though.
+                //rb.AddForce(-playerSprite.transform.right.normalized * acceleration * rb.mass);
+
+                //function to get displacement
+                //
+
+                //current velocity = playerSprite.transform.right.normalized * (initVel * currentTime + 1/2 * -acceleration * currentTime * currentTime)
+                //V = u + a * t :https://www.ncl.ac.uk/webtemplate/ask-assets/external/maths-resources/mechanics/kinematics/equations-of-motion.html#:~:text=at2.-,v%20%3D%20u%20%2B%20a%20t%20%2C%20s%20%3D%20(%20u%20%2B,represents%20the%20direction%20of%20motion.
+                //V is current velocity
+                //u is initial velocity
+                //a is acceleration
+                //t is time.
+
+                //handle Rotation
+                HandleInstantaneousRotation();
+
+                //Checking if we are in the inital dash.
+                //Here: https://www.ssbwiki.com/Dash#Initial_dash
+                //Essentially there is no deceleration during the initial dash
+                //and there is only deceleration after the first six frames
+                //if the user is still holding the same direction then we
+                //should break out of the method and let the user begin running.
+                //otherwise the user should decelerate to a stop.
+                if (frames < dashFrames - 6 && curDirection == dashDirection)
+                {
+                    break;
+                }
+                else
+                    curVel = initVel - acceleration * (timeToDash - currentTime);
+                rb.velocity = spriteParent.transform.right.normalized * curVel;
+                //rb.velocity = playerSprite.transform.right.normalized * (initVel - acceleration * (frames / 60f));
+                //Debug.Log(("RBVel: " + rb.velocity).ToString().Color("cyan"));
+
+                //decrease by acceleration
+                //curVel = initVel + acceleration * (timeToDash - currentTime);
+
+                //decrement.
+                frames--;
+                currentTime -= Time.deltaTime;
+                if (currentTime < 0.0001)
+                {
+                    currentTime = 0;
+                }
+                yield return new WaitForFixedUpdate();
+
+            }
+        }
+
+        //reset dash Direction
+        dashDirection = Direction.None;
+        //coroutine over, we should set the x velocity to be whatever the player's current x input is. 
+        //rb.velocity = new Vector2(xAxis * moveSpeed, rb.velocity.y);
+
+        //say we are no longer tapping
+        didTap = false;
+
+
+        //rb.velocity = new Vector2(0f, rb.velocity.y);
+        Debug.Log("Done!");
+        Debug.Log("Dist: " + dashDist + "\nDist Reached: " + transform.position.x + "\nScale to reach desired: " + dashDist / transform.position.x + "\nTimeToDash: " + timeToDash + "\ncurrentTime: " + currentTime);
+
+        //Debug.Break();
+
+        launchParticles.Stop();
+        //go back to base state.
+        //yield return new WaitForEndOfFrame();
+        state = PlayerState.None;
+        //set dashCoroutine back to null after finishing
+        //so we don't think we are still running.
+        dashCoroutine = null;
+
+    }
+
+    private IEnumerator RotateCoroutine(float start, float end, int totalFrames)
+    {
+        int frames = 0;
+        float current = start;
+        while (frames < totalFrames)
+        {
+            current = Mathf.Lerp(start, end, (float)frames / totalFrames);
+            Debug.Log((current).ToString().Color("brown"));
+            spriteParent.transform.rotation = Quaternion.Euler(0f, current, 0f);
+            frames++;
+            yield return null;
+        }
+        //set the rotation to be the end value.
+        spriteParent.transform.rotation = Quaternion.Euler(0f, end, 0f);
+
+        //set rotate coroutine to be null
+        rotateCoroutine = null;
     }
 
     private IEnumerator DodgeCoroutine()
@@ -681,24 +1043,175 @@ public class Player : MonoBehaviour
         //be inside the while loop then 
         //exit it.
         if (state == PlayerState.None)
-        {
+        {   
+            dodging = true;
+            Debug.Log("Should Dodge".Color("Purple"));
+
+            //The total dodge frames.
             int frames = dodgeFrames;
             state = PlayerState.intangible;
+
+            #region setting up vars
+            //const float delta = 1f / 60f;
+            float timeToDodge = frames / 60f;
+            //float timeToDash = frames * Time.deltaTime;
+
+            //dash modifier = dash dist / actual distance reached prior to dash modifier application.
+            float modDashDodge = dodgeDist * dodgeModifier;
+
+            //This helped me solve it: https://www.quora.com/Given-time-and-distance-how-do-you-calculate-acceleration
+            //distance -> d
+            //average velocity = d/t
+            //final velocity = 2*d/t
+            //acceleration = final velocity / t
+            //therefore acceleration - 2*d/t^2
+            float acceleration = 2f * modDashDodge / Mathf.Pow(timeToDodge, 2f);
+
+            float dodgeForce = Mathf.Sqrt(2f * acceleration * modDashDodge) * rb.mass;
+
+            float initVel = Mathf.Sqrt(2f * acceleration * modDashDodge);
+
+            float curVel = initVel;
+
+            float currentTime = timeToDodge;
+            #endregion
+
+            //TODO:
+            //Replace this with different FX later.
+            launchParticles.Play();
+            
             while (frames > 0)
             {
                 //we wait for fixed update because we need to be in there to mess with physics.
                 yield return new WaitForFixedUpdate();
 
+                if (frames < intangibilityFrames)
+                {
+                    state = PlayerState.helpless;
+                }
+                else
+                {
+                    state = PlayerState.intangible;
+                }
+
+                curVel = initVel - acceleration * (timeToDodge - currentTime);
+                //rb.velocity = playerSprite.transform.right.normalized * curVel;
+                //this dodges in the direction of movement
+                rb.velocity = camRelInput.normalized * curVel;
                 //do the physics for dodging.
                 //TODO:
                 //code spot dodging https://www.ssbwiki.com/Spot_dodge.
                 frames--;
             }
+            
+            //TODO:
+            //Replace this with different FX later.
+            launchParticles.Stop();
+            rb.velocity = Vector2.zero;
+
             //go into freefall after dodging.
             //also set jump count to zero.
+            dodging = false;
             jumpCount = 0;
             state = PlayerState.helpless;
         }
+    }
+
+    //this coroutine is currently used to launch the player when their shield breaks.
+    private IEnumerator JumpCoroutine(int framesTotal, float height)
+    {
+        //Debug.Break();
+        int frames = framesTotal;
+        //this coroutine is currently used to launch the player when their shield breaks.
+        state = PlayerState.launched;
+
+        //const float delta = 1f / 60f;
+        float timeToJump = frames / 60f;
+        //float timeToDash = frames * Time.deltaTime;
+
+        float modJumpHeight = height * dashModifier;
+
+        //This helped me solve it: https://www.quora.com/Given-time-and-distance-how-do-you-calculate-acceleration
+        //distance -> d
+        //average velocity = d/t
+        //final velocity = 2*d/t
+        //acceleration = final velocity / t
+        //therefore acceleration - 2*d/t^2
+        float acceleration = 2f * modJumpHeight / Mathf.Pow(timeToJump, 2f);
+
+        float jumpForce = Mathf.Sqrt(2f * acceleration * modJumpHeight) * rb.mass;
+
+        float initVel = Mathf.Sqrt(2f * acceleration * modJumpHeight);
+
+        //Time at max distance = v0 / acceleration
+        Debug.Log((initVel / acceleration).ToString().Color("lime"));
+
+        Debug.Log("Jump Force: " + jumpForce);
+        //velocity = force / mass * time
+        //float dashVelocity = dashForce / rb.mass * timeToDash;
+
+        rb.AddForce(spriteParent.transform.up.normalized * jumpForce, ForceMode2D.Impulse);
+        rb.AddForce(-spriteParent.transform.up.normalized * acceleration * rb.mass);
+        //frames--;
+        Debug.Log(("RBVel: " + rb.velocity).ToString().Color("purple"));
+        //calling add force here and then again in the while loop is fine
+        //accept when it's the first iteration of the loop and it hasn't
+        //returned to execution. 
+
+        //When 2 addforce calls are made during the same frame only one seems
+        //to be applied.
+        yield return new WaitForFixedUpdate();
+
+        float currentTime = timeToJump;
+
+        //Debug.Break();
+        launchParticles.Play();
+        while (/*currentTime > 0*/frames > 0)
+        {
+            if (!isHitStunned)
+            {
+
+                Debug.DrawRay(transform.position, rb.velocity, Color.red);
+                Debug.Log("InitVel: " + initVel + " Acceleration: " + acceleration);
+                Debug.Log("CurrentTime: " + currentTime + " FrameCount: " + frames);
+                //rb.velocity = playerSprite.transform.right.normalized * initVel;
+                //rb.velocity = playerSprite.transform.right * dashVelocity;
+
+                //decelerate to reach distance.
+                /* if (Mathf.Abs(rb.velocity.x) > 0)
+                     rb.AddForce(-transform.right * acceleration * rb.mass);*/
+
+
+                rb.AddForce(-spriteParent.transform.up.normalized * acceleration * rb.mass);
+                Debug.Log(("RBVel: " + rb.velocity).ToString().Color("cyan"));
+
+
+
+                //decrement.
+                frames--;
+                currentTime -= Time.deltaTime;
+                if (currentTime < 0.0001)
+                {
+                    currentTime = 0;
+                }
+                yield return new WaitForFixedUpdate();
+
+            }
+        }
+
+        Debug.Log("Done!");
+        Debug.Log("Dist: " + dashDist + "\nDist Reached: " + transform.position.x + "\nScale to reach desired: " + dashDist / transform.position.x + "\nTimeToDash: " + timeToJump + "\ncurrentTime: " + currentTime);
+
+        //Debug.Break();
+
+        launchParticles.Stop();
+        //go back to base state.
+        //yield return new WaitForEndOfFrame();
+        state = PlayerState.None;
+        //set dashCoroutine back to null after finishing
+        //so we don't think we are still running.
+        jumpCoroutine = null;
+
     }
 
     private void HandleUI()
@@ -751,18 +1264,145 @@ public class Player : MonoBehaviour
         //set the direction the player is facing.
         if (playerInput.currentControlScheme.Equals("Gamepad") && (moveInput.x > 0 && lastXinput > 0 || moveInput.x < 0 && lastXinput < 0) && Mathf.Abs(moveInput.x) - Mathf.Abs(lastXinput) > 0)
         {
+/*            if (rotateCoroutine != null)
+            {
+                return;
+            }*/
             Debug.Log("Will Rotate".Color("green"));
-            playerSprite.transform.rotation = Quaternion.Euler(1, xAxis < 0 ? 180 : 0, 1);
-            isFacingLeft = xAxis < 0 ? true : false;
+            //isFacingLeft = xAxis < 0 ? true : false;
+            //this needs a deadzone because otherwise
+            //up/down directional attacks
+            //will switch directions for no 'intended' reason.
+            float deadzone = 0.1f;
+            bool prevFacing = isFacingLeft;
+            if (xAxis > 0)
+            {
+                isFacingLeft = false;
+            }
+            else if (xAxis < 0)
+            {
+                Debug.Log("Here: ");
+                isFacingLeft = true;
+            }
+            if (prevFacing != isFacingLeft)
+            {
+                Debug.Log("Current Direction: " + curDirection + " : " + isFacingLeft);
+                if (rotateCoroutine != null)
+                {
+                    StopCoroutine(rotateCoroutine);
+                    rotateCoroutine = null;
+                }
+                /*                if (dashCoroutine != null)
+                                    StopCoroutine(dashCoroutine);
+                                dashCoroutine = null;*/
+                Debug.Log("Starting Rotation Coroutine");
+                rotateCoroutine = StartCoroutine(RotateCoroutine(isFacingLeft ? 0 : 180, isFacingLeft ? 180 : 0, 10));
+            }
+            //playerSprite.transform.rotation = Quaternion.Euler(1, isFacingLeft ? 180 : 0, 1);
         }
 
+        /*        if (lastDirection != Direction.None && playerInput.currentControlScheme.Equals("Gamepad") && lastDirection != curDirection)
+                {
 
+                    float deadzone = 0.1f;
+                    if (xAxis > 0)
+                    {
+                        isFacingLeft = false;
+                    }
+                    else if (xAxis < 0)
+                    {
+                        Debug.Log("Here: ");
+                        isFacingLeft = true;
+                    }
+                    if (lastDirection != curDirection)
+                        rotateCoroutine = StartCoroutine(RotateCoroutine(isFacingLeft ? 0 : 180, isFacingLeft ? 180 : 0, 10));
+                }*/
 
         //if user is inputting via keyboard
         if (playerInput.currentControlScheme.Equals("Keyboard&Mouse") && Mathf.Abs(moveInput.x) > 0)
         {
             Debug.Log("Will Rotate".Color("green"));
-            playerSprite.transform.rotation = Quaternion.Euler(1, xAxis < 0 ? 180 : 0, 1);
+            spriteParent.transform.rotation = Quaternion.Euler(1, xAxis < 0 ? 180 : 0, 1);
+            isFacingLeft = xAxis < 0 ? true : false;
+        }
+    }
+
+    private void HandleInstantaneousRotation()
+    {
+
+        //We do all rotations after
+        //input so that the back 
+        //aerial can be registered.
+        //if the player is moving the stick in the same direction for more than one frame,
+        //set the direction the player is facing.
+        if (playerInput.currentControlScheme.Equals("Gamepad") && (moveInput.x > 0 && lastXinput > 0 || moveInput.x < 0 && lastXinput < 0) && Mathf.Abs(moveInput.x)/* - Mathf.Abs(lastXinput) */> 0)
+        {
+            /*            if (rotateCoroutine != null)
+                        {
+                            return;
+                        }*/
+            Debug.Log("Will Rotate".Color("green"));
+            //isFacingLeft = xAxis < 0 ? true : false;
+            //this needs a deadzone because otherwise
+            //up/down directional attacks
+            //will switch directions for no 'intended' reason.
+            float deadzone = 0.1f;
+            bool prevFacing = isFacingLeft;
+            if (xAxis > 0)
+            {
+                isFacingLeft = false;
+            }
+            else if (xAxis < 0)
+            {
+                
+                isFacingLeft = true;
+            }
+            /*if (prevFacing != isFacingLeft)
+            {
+                Debug.Log("Current Direction: " + curDirection + " : " + isFacingLeft);
+                if (rotateCoroutine != null)
+                    StopCoroutine(rotateCoroutine);
+                *//*if (dashCoroutine != null)
+                    StopCoroutine(dashCoroutine);
+                dashCoroutine = StartCoroutine(DashCoroutine());*//*
+                playerSprite.transform.rotation = Quaternion.Euler(0, isFacingLeft ? 180 : 0, 0);
+            }*/
+            Debug.Log("Current Direction: " + curDirection + " : " + isFacingLeft);
+            if (rotateCoroutine != null)
+            {
+                StopCoroutine(rotateCoroutine);
+                rotateCoroutine = null;
+            }
+
+            /*if (dashCoroutine != null)
+                StopCoroutine(dashCoroutine);
+            dashCoroutine = StartCoroutine(DashCoroutine());*/
+            spriteParent.transform.rotation = Quaternion.Euler(0, isFacingLeft ? 180 : 0, 0);
+            //playerSprite.transform.rotation = Quaternion.Euler(1, isFacingLeft ? 180 : 0, 1);
+        }
+
+        /*        if (lastDirection != Direction.None && playerInput.currentControlScheme.Equals("Gamepad") && lastDirection != curDirection)
+                {
+
+                    float deadzone = 0.1f;
+                    if (xAxis > 0)
+                    {
+                        isFacingLeft = false;
+                    }
+                    else if (xAxis < 0)
+                    {
+                        Debug.Log("Here: ");
+                        isFacingLeft = true;
+                    }
+                    if (lastDirection != curDirection)
+                        rotateCoroutine = StartCoroutine(RotateCoroutine(isFacingLeft ? 0 : 180, isFacingLeft ? 180 : 0, 10));
+                }*/
+
+        //if user is inputting via keyboard
+        if (playerInput.currentControlScheme.Equals("Keyboard&Mouse") && Mathf.Abs(moveInput.x) > 0)
+        {
+            Debug.Log("Will Rotate".Color("green"));
+            spriteParent.transform.rotation = Quaternion.Euler(0, xAxis < 0 ? 180 : 0, 0);
             isFacingLeft = xAxis < 0 ? true : false;
         }
     }
@@ -804,7 +1444,7 @@ public class Player : MonoBehaviour
             //of 0.01 the jumpHeight scale modifier is 1.2f.
 
             //float modifier = 1.2f;//timeToApex / 0.00833333333f;
-            float modifiedJumpHeight = (float)jumpHeight * 1.2f; //* modifier;
+            float modifiedJumpHeight = (float)jumpHeight * jumpHeightModifier; //* modifier;
 
 
             //play crouch animation.
@@ -883,23 +1523,6 @@ public class Player : MonoBehaviour
                     rb.AddForce(-transform.up * Physics2D.gravity.magnitude);
                 }*/
 
-    }
-
-    private IEnumerator JumpCoroutine(int framesTotal, float height)
-    {
-        int frames = framesTotal;
-        float jumpForce = Mathf.Sqrt(2f * Physics2D.gravity.magnitude * height) * rb.mass;
-
-        while (frames > 0)
-        {
-            /*if (frames / framesTotal > 2f/3f)
-            {
-                rb.AddForce(transform.up * jumpForce / framesTotal, ForceMode2D.Force);
-            }*/
-            rb.AddForce(transform.up * jumpForce / framesTotal, ForceMode2D.Force);
-            frames--;
-            yield return null;
-        }
     }
 
     private void HandleAttack()
@@ -1007,7 +1630,7 @@ public class Player : MonoBehaviour
                 //only if our sprite is 
                 //facing the same direction of 
                 //our current input.
-                if (Vector2.Dot(playerSprite.transform.right, directionInput) > 0)
+                if (Vector2.Dot(spriteParent.transform.right, directionInput) > 0)
                 {
                     ForwardAerial();
                 }
@@ -1095,7 +1718,7 @@ public class Player : MonoBehaviour
     private void ApplyFinalMovements() //Step 1
     {
         //Do not let player use inputs when launched.
-        if (state == PlayerState.launched)
+        if (state == PlayerState.launched || state == PlayerState.grabbed)
         {
             return;
         }
@@ -1107,7 +1730,9 @@ public class Player : MonoBehaviour
 
         //if we are dashing we shouldn't set 
         //the x velocity.
-        if (state != PlayerState.dashing)
+        //if we aren't rotating allow player to move.
+        //We should not be able to move while shielding.
+        if (state != PlayerState.dashing && state != PlayerState.shielding && rotateCoroutine == null && !dodging)
         {
             //set velocity directly, don't override y velocity.
             rb.velocity = new Vector2(xAxis * moveSpeed, rb.velocity.y);
@@ -1138,11 +1763,39 @@ public class Player : MonoBehaviour
         Debug.Log("Player 1: Neutral ".Color("yellow"));
 
         //TODO: Actually code this attack.
-        SetHurtboxAttackInfo(moveset.Neutral);
+        SetHurtboxAttackInfo(moveset.neutral);
 
         //lastly set the playerState back to none.
         state = PlayerState.None;
 
+    }
+
+    public virtual void DashAttack()
+    {
+        /*if (state == PlayerState.attacking)
+        {
+            //cannot attack because we are already attacking.
+            return;
+        }
+        else
+        {
+            state = PlayerState.attacking;
+        }*/
+
+        Debug.Log("Player 1: Dash Attack ".Color("lime"));
+
+        //handle rotation
+        //we don't do that here because they should 
+        //only attack in the direction they were dashing.
+        //HandleRotation();
+
+        //TODO: Actually code this attack.
+        SetHurtboxAttackInfo(moveset.dashAttack);
+
+        //lastly set the playerState back to none.
+        //After they do a dash attack they should stop dashing.
+
+        state = PlayerState.None;
     }
 
     public virtual void ForwardTilt()
@@ -1161,10 +1814,10 @@ public class Player : MonoBehaviour
 
         //handle rotation
 
-        HandleRotation();
+        //HandleRotation();
 
         //TODO: Actually code this attack.
-        SetHurtboxAttackInfo(moveset.ForwardTilt);
+        SetHurtboxAttackInfo(moveset.forwardTilt);
 
         //lastly set the playerState back to none.
         state = PlayerState.None;
@@ -1185,7 +1838,7 @@ public class Player : MonoBehaviour
         Debug.Log("Player 1: UpTilt ".Color("yellow"));
 
         //TODO: Actually code this attack.
-        SetHurtboxAttackInfo(moveset.UpTilt);
+        SetHurtboxAttackInfo(moveset.upTilt);
 
         //lastly set the playerState back to none.
         state = PlayerState.None;
@@ -1207,7 +1860,7 @@ public class Player : MonoBehaviour
         Debug.Log("Player 1: DownTilt ".Color("yellow"));
 
         //TODO: Actually code this attack.
-        SetHurtboxAttackInfo(moveset.DownTilt);
+        SetHurtboxAttackInfo(moveset.downTilt);
 
         //lastly set the playerState back to none.
         state = PlayerState.None;
@@ -1233,7 +1886,7 @@ public class Player : MonoBehaviour
         Debug.Log("Player 1: NeutralAerial ".Color("white"));
 
         //TODO: Actually code this attack.
-        SetHurtboxAttackInfo(moveset.NeutralAerial);
+        SetHurtboxAttackInfo(moveset.neutralAerial);
 
 
         //lastly set the playerState back to none.
@@ -1256,7 +1909,7 @@ public class Player : MonoBehaviour
         Debug.Log("Player 1: ForwardAerial ".Color("white"));
 
         //TODO: Actually code this attack.
-        SetHurtboxAttackInfo(moveset.ForwardAerial);
+        SetHurtboxAttackInfo(moveset.forwardAerial);
 
         //lastly set the playerState back to none.
         state = PlayerState.None;
@@ -1280,11 +1933,11 @@ public class Player : MonoBehaviour
         //back aerial is always an input opposite of 
         //the direction the player is facing so we always
         //invert rotation on this attack.
-        playerSprite.transform.rotation = Quaternion.Euler(0f, playerSprite.transform.rotation.eulerAngles.y == 0 ? 180f : 0f, 0f);
+        spriteParent.transform.rotation = Quaternion.Euler(0f, spriteParent.transform.rotation.eulerAngles.y == 0 ? 180f : 0f, 0f);
         Debug.Log("Player 1: BackAerial ".Color("white"));
 
         //TODO: Actually code this attack.
-        SetHurtboxAttackInfo(moveset.BackAerial);
+        SetHurtboxAttackInfo(moveset.backAerial);
 
         //lastly set the playerState back to none.
         state = PlayerState.None;
@@ -1306,7 +1959,7 @@ public class Player : MonoBehaviour
         Debug.Log("Player 1: UpAerial ".Color("white"));
 
         //TODO: Actually code this attack.
-        SetHurtboxAttackInfo(moveset.UpAerial);
+        SetHurtboxAttackInfo(moveset.upAerial);
 
         //lastly set the playerState back to none.
         state = PlayerState.None;
@@ -1328,7 +1981,7 @@ public class Player : MonoBehaviour
         Debug.Log("Player 1: DownAerial ".Color("white"));
 
         //TODO: Actually code this attack.
-        SetHurtboxAttackInfo(moveset.DownAerial);
+        SetHurtboxAttackInfo(moveset.downAerial);
 
         //lastly set the playerState back to none.
         state = PlayerState.None;
@@ -1354,7 +2007,7 @@ public class Player : MonoBehaviour
         Debug.Log("Player 1: NeutralSpecial ".Color("orange"));
 
         //TODO: Actually code this attack.
-        SetHurtboxAttackInfo(moveset.NeutralSpecial);
+        SetHurtboxAttackInfo(moveset.neutralSpecial);
 
         //lastly set the playerState back to none.
         state = PlayerState.None;
@@ -1376,10 +2029,10 @@ public class Player : MonoBehaviour
         Debug.Log("Player 1: ForwardSpecial ".Color("orange"));
 
         //Handle switching facing directions
-        HandleRotation();
+        //HandleRotation();
 
         //TODO: Actually code this attack.
-        SetHurtboxAttackInfo(moveset.ForwardSpecial);
+        SetHurtboxAttackInfo(moveset.forwardSpecial);
 
         //lastly set the playerState back to none.
         state = PlayerState.None;
@@ -1422,7 +2075,7 @@ public class Player : MonoBehaviour
         Debug.Log("Player 1: DownSpecial ".Color("orange"));
 
         //TODO: Actually code this attack.
-        SetHurtboxAttackInfo(moveset.DownSpecial);
+        SetHurtboxAttackInfo(moveset.downSpecial);
 
         //lastly set the playerState back to none.
         state = PlayerState.None;
@@ -1458,7 +2111,7 @@ public class Player : MonoBehaviour
         Debug.Log("Player 1: ForwardSmash ".Color("purple"));
 
         //TODO: Actually code this attack.
-        SetHurtboxAttackInfo(moveset.ForwardSmash);
+        SetHurtboxAttackInfo(moveset.forwardSmash);
 
         //lastly set the playerState back to none.
         state = PlayerState.None;
@@ -1485,7 +2138,7 @@ public class Player : MonoBehaviour
         Debug.Log("Player 1: UpSmash ".Color("purple"));
 
         //TODO: Actually code this attack.
-        SetHurtboxAttackInfo(moveset.UpSmash);
+        SetHurtboxAttackInfo(moveset.upSmash);
 
         //lastly set the playerState back to none.
         state = PlayerState.None;
@@ -1503,7 +2156,7 @@ public class Player : MonoBehaviour
         Debug.Log("Player 1: DownSmash ".Color("purple"));
 
         //TODO: Actually code this attack.
-        SetHurtboxAttackInfo(moveset.DownSmash);
+        SetHurtboxAttackInfo(moveset.downSmash);
 
         //lastly set the playerState back to none.
         state = PlayerState.None;
@@ -1630,7 +2283,7 @@ public class Player : MonoBehaviour
         float angleRad = Mathf.Deg2Rad * angleDeg;
         Debug.Log(angleRad + ":" + angleDeg);
 
-        Vector2 newDirection = hitDirection;
+        Vector2 newDirection;
 
         //Sakurai angle check
         if (Mathf.Abs(angleDeg) == 361f)
@@ -1656,6 +2309,7 @@ public class Player : MonoBehaviour
         //to the left.
         if (hitDirection.x < 0)
         {
+            Debug.Log("SWITCH");
             newDirection.x = -newDirection.x;
         }
 
@@ -1757,7 +2411,8 @@ public class Player : MonoBehaviour
         if (collision.CompareTag("Hurtbox") && !collision.transform.IsChildOf(this.transform))
         {
             //when intangible we ignore attacks.
-            if (state != PlayerState.intangible)
+            //if we can't be damaged don't calculate this.
+            if (state != PlayerState.intangible && state != PlayerState.shielding)
             {
 
                 Debug.Log("We were Hit!".Color("red"));
@@ -1781,11 +2436,29 @@ public class Player : MonoBehaviour
                 //wishDir.x = -dir.x;
                 Debug.DrawRay(transform.position, wishDir.normalized * 5f, Color.green, 1f);
 
+                if (Vector2.Dot(collision.transform.position - transform.position, spriteParent.transform.right) < 0)
+                {
+                    Debug.Log("The other player is hitting me left!".Color("lime"));
+                }
+                else if (Vector2.Dot(collision.transform.position - transform.position, spriteParent.transform.right) > 0)
+                {
+                    Debug.Log("The other player is hitting me right!".Color("cyan"));
+                }
+
                 //launch the player based off of the attack damage.
                 //old
                 //Launch(h.attackInfo.launchAngle, RadiansToVector(Mathf.Deg2Rad * (h.attackInfo.launchAngle)), h.attackInfo.attackDamage, h.attackInfo.baseKnockback, h.attackInfo.knockbackScale, h.attackInfo.hitLag);
                 //new
                 Launch(h.attackInfo.launchAngle, -dir.normalized, h.attackInfo.attackDamage, h.attackInfo.baseKnockback, h.attackInfo.knockbackScale, h.attackInfo.hitLag);
+            }
+            else if (state == PlayerState.shielding)
+            {
+                Debug.Log((this.name + " Can't be damaged, they are shielding!").Color("red"));
+                //TODO: 
+                //Decrement the player's shield health by however much damage this attack does.
+                //Push the player back a small amount even though they are shielding.
+
+                //also do a check where if the player's shield is broken by this attack we launch them here.
             }
         }
         //the player entered the kill trigger. (kill bounds).
