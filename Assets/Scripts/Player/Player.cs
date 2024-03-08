@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.ComponentModel.Design;
+using TMPro;
 using Unity.VisualScripting;
 using System.Collections.Generic;
 using UnityEngine;
@@ -11,6 +12,16 @@ using UnityEngine.UIElements;
 
 public class Player : MonoBehaviour
 {
+
+#if UNITY_EDITOR
+    //if we are in the editor, not in the built game.
+    public bool debugMode = false;
+    private TextMeshPro debugStateText;
+    private GameObject debugTextObj;
+    public Vector3 debugTextPosition = Vector3.zero;
+#endif
+    [HideInInspector]
+    public int stock = 0;
     private float _damagePercent = 0f;
 
     //The gravity we return to 
@@ -147,6 +158,9 @@ public class Player : MonoBehaviour
     //Grab input
     private InputAction grabAction;
 
+    //Pause input
+    private InputAction pauseAction;
+
     #region input bools
 
     bool shouldAttack;
@@ -248,6 +262,10 @@ public class Player : MonoBehaviour
 
         shieldAction = playerInput.actions["Shield"];
         grabAction = playerInput.actions["Grab"];
+
+        pauseAction = playerInput.actions["Pause"];
+
+        
     }
 
     private void OnEnable()
@@ -256,6 +274,8 @@ public class Player : MonoBehaviour
         downSmashAction.Enable();
         rightSmashAction.Enable();
         leftSmashAction.Enable();
+        //call the pause method when the pause action is performed.
+        //pauseAction.performed += GameManager.instance.gameMenu.Pause;
     }
 
     private void OnDisable()
@@ -264,8 +284,12 @@ public class Player : MonoBehaviour
         downSmashAction.Disable();
         rightSmashAction.Disable();
         leftSmashAction.Disable();
+        //Remove the subscription when this is disabled.
+        //pauseAction.performed -= GameManager.instance.gameMenu.Pause;
     }
 
+
+    
 
     // Start is called before the first frame update
     void Start()
@@ -291,11 +315,27 @@ public class Player : MonoBehaviour
 
         //DISABLE GRAVITY SO WE CAN USE OUR OWN.
         rb.gravityScale = 0;
+
+        //call the pause method when the pause action is performed.
+        if (GameManager.instance.gameMenu != null)
+        {
+            pauseAction.performed += context => GameManager.instance.gameMenu.Pause(context);
+        }
+        
     }
 
     // Update is called once per frame
     void Update()
     {
+
+        //If the game is paused make this function 
+        //stop here until unpaused.
+        if (GameManager.instance.isPaused)
+        {
+            return;
+        }
+
+        //Debug.Log(GameManager.instance.isPaused);
 
         #region input bools
 
@@ -517,11 +557,6 @@ public class Player : MonoBehaviour
                     //implement Shielding state so that you can't move while shielding. 
 
                     state = PlayerState.shielding;
-                    //if not shielding, turn on the shield.
-                    if (!shieldTransform.gameObject.activeSelf)
-                    {
-                        shieldTransform.gameObject.SetActive(true);
-                    }
                 }
             }
         } else {
@@ -535,8 +570,14 @@ public class Player : MonoBehaviour
         if (isGrounded && state != PlayerState.shielding) {
             if (grabAction.WasPressedThisFrame()) {
                 HandleGrab();
-            } else if (!isHitStunned && state != PlayerState.helpless && state != PlayerState.dashing) {
-                if (didTap) {
+            }    
+            else if (!isHitStunned && state != PlayerState.helpless && state != PlayerState.dashing)
+            {
+                //only rotate fast when tapping
+                //otherwise do rotation coroutine.
+                if (didTap)
+                {
+                    Debug.Log("THIS");
                     HandleInstantaneousRotation();
                 } else {
                     HandleRotation();
@@ -591,6 +632,14 @@ public class Player : MonoBehaviour
         //Also I don't have a good explanation
         //for it.
         HandleState();
+
+#if UNITY_EDITOR
+        //preprocessor to check for debug stuff.
+        if (debugMode)
+        {
+            HandleDebug();
+        }
+#endif
     }
 
     private void HandleGrab()
@@ -710,6 +759,12 @@ public class Player : MonoBehaviour
         #region Shielding
         if (state == PlayerState.shielding)
         {
+            //Make shield visible if it isn't already.
+            if (!shieldTransform.gameObject.activeSelf)
+            {
+                shieldTransform.gameObject.SetActive(true);
+            }
+
             //In Ultimate you lose 0.15 per frame.
             //Source: https://www.ssbwiki.com/Shield#Shield_statistics
             if (shieldHealth > 0)
@@ -729,6 +784,16 @@ public class Player : MonoBehaviour
 
         }
         else
+        {
+            //hide shield if we shouldn't be shielding.
+            if (shieldTransform.gameObject.activeSelf)
+            {
+
+                shieldTransform.gameObject.SetActive(false);
+            }
+        }
+        
+        if (state != PlayerState.shielding)
         {
             //In Ultimate you regen 0.08 per frame.
             //Source: https://www.ssbwiki.com/Shield#Shield_statistics
@@ -944,8 +1009,11 @@ public class Player : MonoBehaviour
         launchParticles.Play();
         while (/*currentTime > 0*/frames > 0)
         {
+            
             if (!isHitStunned)
             {
+
+
                 //if we are rotating,
                 //wait until after to 
                 //start dashing.
@@ -1040,12 +1108,46 @@ public class Player : MonoBehaviour
 
     }
 
+    private void CancelDashing()
+    {
+        if (dashCoroutine != null)
+        {
+            StopCoroutine(dashCoroutine);
+
+            #region The Code that normally gets called at the end of the dash coroutine.
+            //reset dash Direction
+            dashDirection = Direction.None;
+            //coroutine over, we should set the x velocity to be whatever the player's current x input is. 
+            //rb.velocity = new Vector2(xAxis * moveSpeed, rb.velocity.y);
+
+            //say we are no longer tapping
+            didTap = false;
+
+            //Debug.Break();
+
+            launchParticles.Stop();
+            //go back to base state.
+            state = PlayerState.None;
+            //set dashCoroutine back to null after finishing
+            //so we don't think we are still running.
+            dashCoroutine = null;
+            #endregion
+        }
+    }
+
     private IEnumerator RotateCoroutine(float start, float end, int totalFrames)
     {
         int frames = 0;
         float current = start;
         while (frames < totalFrames)
         {
+            //If the game is paused make this coroutine 
+            //infinite loop here until unpaused.
+            while (GameManager.instance.isPaused)
+            {
+                yield return null;
+            }
+
             current = Mathf.Lerp(start, end, (float)frames / totalFrames);
             Debug.Log((current).ToString().Color("brown"));
             spriteParent.transform.rotation = Quaternion.Euler(0f, current, 0f);
@@ -1104,10 +1206,19 @@ public class Player : MonoBehaviour
             //Replace this with different FX later.
             launchParticles.Play();
 
+            //If the game is paused make this coroutine 
+            //infinite loop here until unpaused.
+            //Otherwise if the game is paused while inside the
+            //other while loop it'll wait for FixedUpdate for
+            //quite a long time.
+            while (GameManager.instance.isPaused)
+            {
+                yield return null;
+            }
+
             while (frames > 0)
             {
-                //we wait for fixed update because we need to be in there to mess with physics.
-                yield return new WaitForFixedUpdate();
+
 
                 if (frames < intangibilityFrames)
                 {
@@ -1126,6 +1237,8 @@ public class Player : MonoBehaviour
                 //TODO:
                 //code spot dodging https://www.ssbwiki.com/Spot_dodge.
                 frames--;
+                //we wait for fixed update because we need to be in there to mess with physics.
+                yield return new WaitForFixedUpdate();
             }
 
             //TODO:
@@ -1195,6 +1308,13 @@ public class Player : MonoBehaviour
             if (!isHitStunned)
             {
 
+                //If the game is paused make this coroutine 
+                //infinite loop here until unpaused.
+                while (GameManager.instance.isPaused)
+                {
+                    yield return null;
+                }
+
                 Debug.DrawRay(transform.position, rb.velocity, Color.red);
                 Debug.Log("InitVel: " + initVel + " Acceleration: " + acceleration);
                 Debug.Log("CurrentTime: " + currentTime + " FrameCount: " + frames);
@@ -1244,6 +1364,8 @@ public class Player : MonoBehaviour
         {
             if (characterIcon.GetPercent() != damagePercent)
                 characterIcon.SetPercent(damagePercent);
+            //this is what determines how many stocks are displayed in the UI.
+            characterIcon.stockCount = stock;
         }
         else
         {
@@ -1305,7 +1427,6 @@ public class Player : MonoBehaviour
             }
             else if (xAxis < 0)
             {
-                Debug.Log("Here: ");
                 isFacingLeft = true;
             }
             if (prevFacing != isFacingLeft)
@@ -1435,8 +1556,14 @@ public class Player : MonoBehaviour
     {
 
 
-        if (doJump)
+        if (doJump && state != PlayerState.shielding)
         {
+            //Cancel out of dash and begin jumping
+            if (state == PlayerState.dashing)
+            {
+                CancelDashing();
+            }
+
             //this constant (1.2) was discovered
             //by dividing the desired jump height by
             //the height actually reached.
@@ -2371,6 +2498,7 @@ public class Player : MonoBehaviour
 
         while (/*launchSpeed > 0*/ hitStunFrames > 0)
         {
+
             //If you decide not to apply gravity to the y axis during a launch don't forget
             //to remove these floats and just do rb.velocity = hitDirection * launchSpeed;
 
@@ -2400,7 +2528,7 @@ public class Player : MonoBehaviour
             hitStunFrames--;
             //waitTime -= 0.51f;
             t += Time.deltaTime;
-            yield return null;
+            yield return new WaitForFixedUpdate();
         }
         //stop doing launch particles.
         launchParticles.Stop();
@@ -2488,7 +2616,7 @@ public class Player : MonoBehaviour
         //the player entered the kill trigger. (kill bounds).
         else if (collision.gameObject.CompareTag("Kill"))
         {
-            Debug.Log(gameObject.name + " was killed!");
+            Debug.Log(gameObject.name + " was Knocked Out!");
             //kill player.
             //we destroy both player and the icon for it
             //because I am too lazy to just make code
@@ -2614,5 +2742,33 @@ public class Player : MonoBehaviour
 
         return Direction.None;
     }
+
+#if UNITY_EDITOR
+    public void HandleDebug()
+    {
+        if (debugTextObj == null)
+        {
+            //Create a new GameObject with a TextMeshPro component
+            debugTextObj = new GameObject("Debug State Text", typeof(TextMeshPro));
+            debugStateText = debugTextObj.GetComponent<TextMeshPro>();
+            //Set the parent of the debug text to be this transform.
+            debugTextObj.transform.SetParent(this.transform, false);
+            //Set the position of the debug text relative to it's parent.
+            debugTextObj.transform.localPosition = debugTextPosition;
+
+            debugStateText.fontSize = 6;
+            debugStateText.alignment = TextAlignmentOptions.Center;
+
+            //Set the debug texts text to be the current state.
+            debugStateText.text = state.ToString();
+        }
+        else if (debugTextObj != null)
+        {
+            //Set the debug texts text to be the current state.
+            debugStateText.text = state.ToString();
+        }
+    }
+#endif
+
 }
 

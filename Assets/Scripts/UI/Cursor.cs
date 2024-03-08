@@ -35,7 +35,9 @@ public class Cursor : MonoBehaviour
     //where our character was inserted into 
     //the list of characters so we can replace it
     //if they decide to change characters.
-    private int characterIndex;
+    public int characterIndex;
+    //if the user already selected a character.
+    public bool didSelect;
     private GameObject coinInstance;
 
     // Start is called before the first frame update
@@ -106,15 +108,18 @@ public class Cursor : MonoBehaviour
             {
                 //assign the device controlling this player and the character prefab they selected to the GameManager before we load the 
                 //next scene.
-                PlayerInfo playerInfo = new PlayerInfo(playerInput.GetDevice<InputDevice>(), playerInput.currentControlScheme, selectIcon.characterIcon);
+                PlayerInfo playerInfo = new PlayerInfo(playerInput.GetDevice<InputDevice>(), playerInput.currentControlScheme, selectIcon.characterIcon, GameManager.instance.stockTotal);
                 //if we already placed our coin, 
                 //then when they click again it 
                 //means they are trying to 
                 //select a different character.
-                if (coinInstance)
+                if (didSelect)
                 {
+                    //Don't change did select because we are still selecting a character here.
+
                     //Destroy the coin that was placed before 
                     //and place a new one. 
+                    if (coinInstance)
                     Destroy(coinInstance.gameObject);
                     coinInstance = Instantiate(coinPrefab, cursorTransform.position, Quaternion.identity, canvas.transform);
                     //replace the reference so that 
@@ -131,6 +136,7 @@ public class Cursor : MonoBehaviour
                     characterIndex = GameManager.instance.players.Count - 1;
                     //create the coin where the cursor currently is.
                     coinInstance = Instantiate(coinPrefab, cursorTransform.position, Quaternion.identity, canvas.transform);
+                    didSelect = true;
                     print(results[0].gameObject.name);
                 }
             }
