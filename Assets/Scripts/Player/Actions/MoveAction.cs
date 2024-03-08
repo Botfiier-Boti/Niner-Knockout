@@ -10,7 +10,6 @@ public class MoveAction : PlayerAction {
     }
 
     public override void Do() {
-        Debug.Log("Moving");
         Transform camTransform = Camera.main.transform;
         Vector2 moveInput = action.ReadValue<Vector2>();
         Vector2 moveDirection = ((moveInput.normalized.x * camTransform.right.normalized) + (moveInput.normalized.y * camTransform.up.normalized)) * owner.moveSpeed;
@@ -19,7 +18,7 @@ public class MoveAction : PlayerAction {
         {
             if (moveInput.x > 0)
             {
-               owner. xAxis = moveInput.x <= 0.75f ? 0.5f : 1f;
+               owner.xAxis = moveInput.x <= 0.75f ? 0.5f : 1f;
             }
             else if (moveInput.x < 0)
             {
@@ -39,5 +38,7 @@ public class MoveAction : PlayerAction {
                 owner.yAxis = moveInput.y <= -0.75f ? -1 : -0.5f;
             }
         }
+        if (moveInput.x != 0 && moveInput.y != 0)
+            owner.HandleInstantaneousRotation();
     }
 }

@@ -55,12 +55,20 @@ public class PlayerAction {
         End();
     }
 
-    public virtual void Do() {}
+    public virtual void Do() {
+    }
 
     private void End() {
+        if (isLooping == true && running == true)
+            return;
         nextUse = System.DateTime.Now.Ticks + cooldown * TICKS_IN_MILLISECOND;
         whenFree = System.DateTime.Now.Ticks + lockoutTime * TICKS_IN_MILLISECOND;
         running = false;
+    }
+
+    public void Stop() {
+        running = false;
+        End();
     }
 
     public bool isOnCooldown() {
