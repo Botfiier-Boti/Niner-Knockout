@@ -23,6 +23,8 @@ using static UnityEngine.UIElements.UxmlAttributeDescription;
 
 public class GameMode : MonoBehaviour
 {
+    
+
     //Only make this value editable
     //in the inspector.
     [SerializeField]
@@ -33,11 +35,14 @@ public class GameMode : MonoBehaviour
     //assigned during the selection screen.
     public List<PlayerInfo> players;
 
+    public List<AudioClip> respawnSounds = new List<AudioClip>();
+
     private void Awake()
     {
         //make a copy of the original list of players for use
         //during this game mode.
         players = new List<PlayerInfo>(GameManager.instance.players);
+
         //Set our reference in the GameManager
         GameManager.instance.gameMode = this;
     }
@@ -45,16 +50,34 @@ public class GameMode : MonoBehaviour
     // Start is called before the first frame update
     void Start()
     {
-        
+
     }
 
     // Update is called once per frame
     void Update()
     {
-        if (players.Count == 1)
+
+        //Super inefficient way to check if there's only 1 player left.
+        int deadCount = 0;
+        foreach (PlayerInfo player in players)
+        {
+            if (player.stock == 0)
+            {
+                deadCount++;
+            }
+        }
+        Debug.LogWarning(deadCount);
+        if (deadCount == players.Count - 1)
         {
             Debug.Log("IT'S A KNOCKOUT!".Color("Green"));
             GameManager.instance.setScene("CharacterSelectionScene");
         }
+
+
+/*        if (players.Count == 1)
+        {
+            Debug.Log("IT'S A KNOCKOUT!".Color("Green"));
+            GameManager.instance.setScene("CharacterSelectionScene");
+        }*/
     }
 }

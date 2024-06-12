@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.ComponentModel.Design;
 using TMPro;
 using Unity.VisualScripting;
@@ -234,6 +235,7 @@ public class Player : MonoBehaviour
 
     #endregion
 
+    
 
     private void Awake()
     {
@@ -294,6 +296,7 @@ public class Player : MonoBehaviour
     // Start is called before the first frame update
     void Start()
     {
+        
         //set the shield health.
         shieldHealth = totalShield;
         //set the OG scale of this shield for use later.
@@ -321,7 +324,10 @@ public class Player : MonoBehaviour
         {
             pauseAction.performed += context => GameManager.instance.gameMenu.Pause(context);
         }
-        
+
+        //I should probably check if this is a respawn before I play this bc otherwise all the characters will play a respawn audio at the beginning.
+        AudioManager.instance.globalSource.PlayOneShot(GameManager.instance.gameMode.respawnSounds[UnityEngine.Random.Range(0, GameManager.instance.gameMode.respawnSounds.Count)]);
+
     }
 
     // Update is called once per frame
@@ -1365,7 +1371,11 @@ public class Player : MonoBehaviour
             if (characterIcon.GetPercent() != damagePercent)
                 characterIcon.SetPercent(damagePercent);
             //this is what determines how many stocks are displayed in the UI.
-            characterIcon.stockCount = stock;
+            if (GameManager.instance.gameMode != null)
+            {
+                //if (GameManager.instance.gameMode.players[characterIndex] != null)
+                characterIcon.stockCount = GameManager.instance.gameMode.players[characterIndex].stock;
+            }
         }
         else
         {
@@ -2602,6 +2612,8 @@ public class Player : MonoBehaviour
                 //Launch(h.attackInfo.launchAngle, RadiansToVector(Mathf.Deg2Rad * (h.attackInfo.launchAngle)), h.attackInfo.attackDamage, h.attackInfo.baseKnockback, h.attackInfo.knockbackScale, h.attackInfo.hitLag);
                 //new
                 Launch(h.attackInfo.launchAngle, -dir.normalized, h.attackInfo.attackDamage, h.attackInfo.baseKnockback, h.attackInfo.knockbackScale, h.attackInfo.hitLag);
+                //Play the audio for getting hit.
+                AudioManager.instance.globalSource.PlayOneShot(hitSounds[UnityEngine.Random.Range(0, hitSounds.Count)]);
             }
             else if (state == PlayerState.shielding)
             {
@@ -2621,7 +2633,9 @@ public class Player : MonoBehaviour
             //we destroy both player and the icon for it
             //because I am too lazy to just make code
             //to re-assign it.
-            Destroy(characterIcon.gameObject);
+
+            //We no longer do that, the GameMode and CharacterManager now handle that.
+            //Destroy(characterIcon.gameObject);
             Destroy(gameObject);
         }
     }
@@ -2704,7 +2718,16 @@ public class Player : MonoBehaviour
     {
         if (GameManager.instance.characterManager != null)
         {
+            //play death sound
+            if (AudioManager.instance != null && AudioManager.instance.globalSource != null)
+            AudioManager.instance.globalSource.PlayOneShot(deathSounds[UnityEngine.Random.Range(0, deathSounds.Count)]);
+            //TODO:
+            //Spawn the death particle system and make it face the center of the map then play it.
+            //if this is the last death of the match the characterManager or GameMode should call that coroutine that slows down the game. 
+
             GameManager.instance.characterManager.PlayerDied(characterIndex);
+            //Call handle UI one last time so that our stock count is accurate. 
+            HandleUI();
         }
     }
 

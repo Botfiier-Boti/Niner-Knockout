@@ -1,4 +1,6 @@
 using System.Collections.Generic;
+using TMPro;
+using Unity.VisualScripting;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.InputSystem;
@@ -10,7 +12,7 @@ using UnityEngine.UI;
 //a custom one.
 public class Cursor : MonoBehaviour
 {
-    PlayerInput playerInput;
+    public PlayerInput playerInput;
 
     public GameObject coinPrefab;
 
@@ -31,18 +33,29 @@ public class Cursor : MonoBehaviour
     private PointerEventData pointerEventData = new PointerEventData(null);
     public GraphicRaycaster gr;
 
+    private int _characterIndex = -1;
+
     //used to store the index 
     //where our character was inserted into 
     //the list of characters so we can replace it
     //if they decide to change characters.
-    public int characterIndex;
+    public int characterIndex {  get { return _characterIndex; } set { _characterIndex = value; } }
     //if the user already selected a character.
     public bool didSelect;
     private GameObject coinInstance;
 
+    public PlayerUIIcon playerUIIcon;
+
     // Start is called before the first frame update
     void Start()
     {
+       
+
+/*        //Might want to change this in the future especially when loading the scene again.
+        characterIndex = curCharacterIndex;
+        curCharacterIndex++;
+        //End of area we need to change.*/
+
         canvas = FindObjectOfType<Canvas>();
 
         if (canvas == null)
@@ -53,6 +66,17 @@ public class Cursor : MonoBehaviour
         playerInput = GetComponent<PlayerInput>();
         moveAction = playerInput.actions["point"];
         selectAction = playerInput.actions["click"];
+
+        playerUIIcon = GameManager.instance.characterManager.AddPlayerIcon(null);
+        //Set the icon's character index.
+        playerUIIcon.characterIndex = characterIndex;
+        playerUIIcon.playerName.text = "Player" + characterIndex.ToString();
+
+        //When the device is disconnected destroy us and our gameobject.
+        //For this to get called make sure the "Send Unity Events" mode is selected in the "PlayerInput" component.
+        //playerInput.deviceLostEvent.AddListener(_ => Debug.LogWarning("HERE")/*Destroy(this.gameObject)*/);
+        //Can't do this here. Nevermind, it causes an error when you destroy this object because the PlayerInput no longer exists but this listener
+        //is trying to find it.
     }
 
     private void Update()
@@ -96,6 +120,13 @@ public class Cursor : MonoBehaviour
         }
     }
 
+/*    public PlayerInfo CreatePlayerInfo()
+    {
+        return new PlayerInfo(playerInput.GetDevice<InputDevice>(), playerInput.currentControlScheme, null, GameManager.instance.stockTotal);
+    }*/
+
+
+
     private void Select()
     {
         pointerEventData.position = transform.position;
@@ -121,23 +152,36 @@ public class Cursor : MonoBehaviour
                     //and place a new one. 
                     if (coinInstance)
                     Destroy(coinInstance.gameObject);
-                    coinInstance = Instantiate(coinPrefab, cursorTransform.position, Quaternion.identity, canvas.transform);
+                    coinInstance = createCoin(coinPrefab, cursorTransform.position, Quaternion.identity, canvas.transform, characterIndex);
                     //replace the reference so that 
                     //the old character they chose is 
                     //removed and we assign the new 
                     //character. 
                     GameManager.instance.players[characterIndex] = playerInfo;
+
+                    //Play the audio of the selection
+                    AudioManager.instance.globalSource.PlayOneShot(playerInfo.characterIcon.characterAnnouncement);
+
+                    //Call to reassign the character we've selected.
+                    playerUIIcon.ReassignCharacterIcon(selectIcon);
                 }
                 else
                 {
                     //add the playerInfo to the GameManager player list.
-                    GameManager.instance.players.Add(playerInfo);
+                    //GameManager.instance.players.Add(playerInfo);
+                    GameManager.instance.players[characterIndex] = playerInfo;
                     //set the character index in case we need to remove it.
-                    characterIndex = GameManager.instance.players.Count - 1;
+                    //characterIndex = GameManager.instance.players.Count - 1;
                     //create the coin where the cursor currently is.
-                    coinInstance = Instantiate(coinPrefab, cursorTransform.position, Quaternion.identity, canvas.transform);
+                    coinInstance = createCoin(coinPrefab, cursorTransform.position, Quaternion.identity, canvas.transform, characterIndex);
                     didSelect = true;
-                    print(results[0].gameObject.name);
+                    //print(results[0].gameObject.name);
+
+                    //Play the audio of the selection
+                    AudioManager.instance.globalSource.PlayOneShot(playerInfo.characterIcon.characterAnnouncement);
+
+                    //Call to reassign the character we've selected.
+                    playerUIIcon.ReassignCharacterIcon(selectIcon);
                 }
             }
             if (results[0].gameObject.TryGetComponent(out Button button))
@@ -150,6 +194,15 @@ public class Cursor : MonoBehaviour
         }
     }
 
+    public GameObject createCoin(GameObject gameObject, Vector3 position,  Quaternion rotation, Transform parent, int playerIndex)
+    {
+        GameObject temp = Instantiate(coinPrefab, cursorTransform.position, Quaternion.identity, canvas.transform);
+        //Set the color of the coin.
+        temp.GetComponent<Image>().color = playerUIIcon.backgroundGradient.Evaluate(playerIndex);
+        //Set the number on the coin.
+        temp.GetComponentInChildren<TextMeshProUGUI>().text = "P" + playerIndex;
+        return temp;
+    }
 
 
     private void UpdateMotion()
@@ -204,5 +257,23 @@ public class Cursor : MonoBehaviour
             lastStickValue = stickValue;
             lastTime = currentTime;
         }
+    }
+
+    //We call destroy if a player disconnects.
+    //Therefore we should also destroy their icon in the UI 
+    //if they disconnect.
+    //We also remove them from the player list in CharacterManager.cs 
+    //By listening for all the disconnections.
+
+    //Yes, I am aware that this code should be all in one place and only get 
+    //called by one thing but I haven't had the time to clean it up yet.
+    //I wanted to call it from characterManager.cs but I didn't 
+    //set the codebase up properly to store references for that.
+    //I'll have to do that in the future.
+    private void OnDestroy()
+    {         
+        Destroy(playerUIIcon.gameObject);
+        if (coinInstance)
+        Destroy(coinInstance.gameObject);
     }
 }
